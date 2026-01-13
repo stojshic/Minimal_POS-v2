@@ -1,0 +1,19 @@
+"""
+Configuration for POS system
+Store this info or load from settings file
+"""
+
+STORE_CONFIG = {
+    "name": "Moja Prodavnica", # Your store name
+    "address": "Dejana Brankova 26, Bela Crkva", # Store address
+    "pib": "123123123", # Your PIB
+    'pfr_number': "PFR-001", # Fiscal device number
+    "cashier": "Kasir 1",
+}
+
+# Serbian VAT rates
+VAT_RATES = {
+    "standard": 0.20,   # 20% standard rate
+    "reduced": 0.10,    # 10% reduced rate
+    "zero": 0.00,       # 0% (books, some food items)
+}
