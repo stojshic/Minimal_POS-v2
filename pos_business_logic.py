@@ -658,30 +658,3 @@ class UserService:
             return True, "Lozinka uspešno promenjena"
         else:
             return False, "Greška pri promeni lozinke"
-
-
-    # In pos_business_logic.py, UserService class
-
-    def delete_user(self, user_id: int) -> Tuple[bool, str]:
-        """
-        Delete user permanently
-        
-        Returns:
-            (success, message)
-        """
-        # Safety check: prevent deleting yourself
-        # (You'd need to pass current_user_id to check this)
-        
-        # Safety check: prevent deleting last admin
-        all_users = self.users.get_all_users()
-        admins = [u for u in all_users if u['role'] == 'admin' and u['is_active']]
-        user_to_delete = next((u for u in all_users if u['id'] == user_id), None)
-        
-        if user_to_delete and user_to_delete['role'] == 'admin' and len(admins) == 1:
-            return False, "Ne možete obrisati poslednjeg administratora!"
-        
-        success = self.users.delete_user(user_id)
-        if success:
-            return True, f"Korisnik obrisan"
-        else:
-            return False, "Greška pri brisanju korisnika"

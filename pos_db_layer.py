@@ -579,19 +579,3 @@ class UserRepository:
             )
             return cursor.rowcount > 0
 
-
-    # In pos_db_layer.py, UserRepository class
-
-    def delete_user(self, user_id: int) -> bool:
-        """
-        Permanently delete a user from the database
-        
-        WARNING: This is a hard delete - cannot be undone!
-        Consider preventing deletion of:
-        - The last admin user
-        - Currently logged-in user
-        """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
-            return cursor.rowcount > 0
