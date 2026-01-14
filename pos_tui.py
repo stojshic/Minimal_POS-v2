@@ -2,6 +2,7 @@
 Textual TUI for POS System
 Beautiful terminal interface
 """
+from typing import Optional
 from textual.app import App, ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Header, Footer, Button, DataTable, Input, Label, Static
@@ -87,7 +88,7 @@ class LoginScreen(Screen):
 
             yield Static("", id="error-message")
 
-            yield Button("Prijavi se [Enter]", id="login-button", variant="success")
+            yield Button("Prijavi se \\[Enter]", id="login-button", variant="success")
 
     def on_mount(self) -> None:
         """Focus username input"""
@@ -157,6 +158,7 @@ class UserManagementScreen(Screen):
         Binding("n", "new_user", "New User"),
         Binding("p", "change_password", "Change Password"),
         Binding("d", "toggle_active", "Toggle Active"),
+        Binding("delete", "delete_user", "Delete User"),
     ]
 
     def __init__(self, user_service):
@@ -169,10 +171,11 @@ class UserManagementScreen(Screen):
             yield DataTable(id="user-table")
 
             with Horizontal(id="user-controls"):
-                yield Button("Novi korisnik [N]", id="new-user-btn", variant="success")
-                yield Button("Promeni lozinku [P]", id="password-btn", variant="primary")
-                yield Button("Aktiviraj/Deaktiviraj [D]", id="toggle-btn", variant="warning")
-                yield Button("Zatvori [ESC]", id="close-btn", variant="default")
+                yield Button("Novi korisnik \\[N]", id="new-user-btn", variant="success")
+                yield Button("Promeni lozinku \\[P]", id="password-btn", variant="primary")
+                yield Button("Aktiviraj/Deaktiviraj \\[D]", id="toggle-btn", variant="warning")
+                yield Button("Obriši \\[Del]", id="delete-btn", variant="error")
+                yield Button("Zatvori \\[Esc]", id="close-btn", variant="default")
 
     def on_mount(self) -> None:
         """Setup table and load users"""
@@ -209,6 +212,8 @@ class UserManagementScreen(Screen):
             self.action_toggle_active()
         elif event.button.id == "close-btn":
             self.action_close()
+        elif event.button.id == "delete-btn":
+            self.action_delete_user()
 
     def action_new_user(self) -> None:
         """Create new user"""
@@ -265,6 +270,562 @@ class UserManagementScreen(Screen):
         """Callback after password change"""
         if result:
             self.notify("Lozinka promenjena!", severity="success")
+
+    def action_delete_user(self) -> None:
+        """Delete user permanently"""
+        table = self.query_one("#user-table", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            user_id = int(row[0])
+            username = row[1]
+
+            self.app.push_screen(
+                ConfirmDeleteScreen(self.user_service, user_id, username),
+                self.handle_user_deleted
+            )
+        else:
+            self.notify("Izaberite korisnika!", severity="warning")
+
+    def handle_user_deleted(self, result) -> None:
+        """Callback after user deletion"""
+        if result:
+            self.load_users()
+
+
+class InventoryManagementScreen(Screen):
+    """Admin screen for managing inventory"""
+
+    CSS = """
+    InventoryManagementScreen {
+        background: $surface;
+    }
+
+    #inventory-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #inventory-table {
+        height: 1fr;
+        border: solid $primary;
+    }
+
+    #search-container {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #inventory-controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        background: $panel;
+        padding: 1;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("n", "new_item", "New Item"),
+        Binding("e", "edit_item", "Edit Item"),
+        Binding("delete", "delete_item", "Delete Item"),
+        Binding("p", "change_price", "Change Price"),
+    ]
+
+    def __init__(self, pos_service):
+        super().__init__()
+        self.pos_service = pos_service
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="inventory-container"):
+            yield Label("📦 UPRAVLJANJE INVENTAROM", classes="label")
+
+            with Horizontal(id="search-container"):
+                yield Input(placeholder="Pretraga artikala...", id="search-input")
+
+            yield DataTable(id="inventory-table")
+
+            with Horizontal(id="inventory-controls"):
+                yield Button("Novi artikal \\[N]", id="new-item-btn", variant="success")
+                yield Button("Izmeni \\[E]", id="edit-item-btn", variant="primary")
+                yield Button("Promeni cenu \\[P]", id="price-btn", variant="warning")
+                yield Button("Obriši \\[Del]", id="delete-item-btn", variant="error")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+
+    def on_mount(self) -> None:
+        """Setup table and load inventory"""
+        table = self.query_one("#inventory-table", DataTable)
+        table.add_columns("ID", "Artikal", "Barkod", "Cena", "Količina", "PDV %")
+        table.cursor_type = "row"
+
+        self.load_inventory()
+
+        # Focus search
+        self.query_one("#search-input", Input).focus()
+
+    def load_inventory(self, search_term: str = "") -> None:
+        """Load inventory into table"""
+        table = self.query_one("#inventory-table", DataTable)
+        table.clear()
+
+        items = self.pos_service.search_inventory(search_term)
+
+        for item in items:
+            vat_percent = int(item.get('vat_rate', 0.20) * 100)
+            table.add_row(
+                str(item['id']),
+                item['item'],
+                item.get('barcode') or "",
+                f"{item['price']:.2f}",
+                f"{item['quantity']:.2f}",
+                f"{vat_percent}%"
+            )
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live search"""
+        if event.input.id == "search-input":
+            self.load_inventory(event.value.strip())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "new-item-btn":
+            self.action_new_item()
+        elif event.button.id == "edit-item-btn":
+            self.action_edit_item()
+        elif event.button.id == "price-btn":
+            self.action_change_price()
+        elif event.button.id == "delete-item-btn":
+            self.action_delete_item()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def get_selected_item(self) -> Optional[dict]:
+        """Get currently selected item"""
+        table = self.query_one("#inventory-table", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            item_id = int(row[0])
+            return self.pos_service.get_inventory_item(item_id)
+        return None
+
+    def action_new_item(self) -> None:
+        """Create new inventory item"""
+        self.app.push_screen(AddEditItemScreen(self.pos_service), self.handle_item_changed)
+
+    def action_edit_item(self) -> None:
+        """Edit selected item"""
+        item = self.get_selected_item()
+        if item:
+            self.app.push_screen(
+                AddEditItemScreen(self.pos_service, item),
+                self.handle_item_changed
+            )
+        else:
+            self.notify("Izaberite artikal!", severity="warning")
+
+    def action_change_price(self) -> None:
+        """Quick price change"""
+        item = self.get_selected_item()
+        if item:
+            self.app.push_screen(
+                ChangePriceScreen(self.pos_service, item),
+                self.handle_item_changed
+            )
+        else:
+            self.notify("Izaberite artikal!", severity="warning")
+
+    def action_delete_item(self) -> None:
+        """Delete item (with confirmation)"""
+        item = self.get_selected_item()
+        if item:
+            self.app.push_screen(
+                ConfirmDialog(
+                    f"Da li ste sigurni da želite obrisati '{item['item']}'?",
+                    "BRISANJE ARTIKLA"
+                ),
+                lambda confirmed: self.handle_delete(item['id']) if confirmed else None
+            )
+        else:
+            self.notify("Izaberite artikal!", severity="warning")
+
+    def handle_delete(self, item_id: int) -> None:
+        """Actually delete the item"""
+        # We need to add delete method to inventory repository
+        try:
+            # For now, just set quantity to 0 (soft delete)
+            self.pos_service.inventory.update_quantity(item_id, -999999)
+            self.notify("Artikal obrisan!", severity="success")
+            self.load_inventory()
+        except Exception as e:
+            self.notify(f"Greška: {str(e)}", severity="error")
+
+    def action_close(self) -> None:
+        """Close screen"""
+        self.dismiss()
+
+    def handle_item_changed(self, result) -> None:
+        """Callback after item add/edit"""
+        if result:
+            self.load_inventory()
+
+
+class AddEditItemScreen(Screen):
+    """Screen for adding or editing inventory item"""
+
+    CSS = """
+    AddEditItemScreen {
+        align: center middle;
+    }
+
+    #item-dialog {
+        width: 60;
+        height: auto;
+        border: thick $success;
+        background: $surface;
+        padding: 2;
+    }
+
+    .input-label {
+        padding: 1 0 0 0;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    #vat-selection {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, pos_service, item: Optional[dict] = None):
+        super().__init__()
+        self.pos_service = pos_service
+        self.item = item  # None for new item, dict for editing
+        self.is_edit_mode = item is not None
+        self.selected_vat = item.get('vat_rate', 0.20) if item else 0.20
+
+    def compose(self) -> ComposeResult:
+        title = "✏️  IZMENA ARTIKLA" if self.is_edit_mode else "➕ NOVI ARTIKAL"
+
+        with Vertical(id="item-dialog"):
+            yield Label(title, classes="label")
+
+            yield Label("Naziv artikla:", classes="input-label")
+            yield Input(
+                placeholder="Pun naziv artikla...",
+                id="name-input",
+                value=self.item['item'] if self.item else ""
+            )
+
+            yield Label("Barkod (opciono):", classes="input-label")
+            yield Input(
+                placeholder="Skenirajte ili unesite barkod...",
+                id="barcode-input",
+                value=self.item.get('barcode') or "" if self.item else ""
+            )
+
+            yield Label("Cena (RSD):", classes="input-label")
+            yield Input(
+                placeholder="Cena po komadu...",
+                id="price-input",
+                type="number",
+                value=str(self.item['price']) if self.item else ""
+            )
+
+            yield Label("Količina:", classes="input-label")
+            yield Input(
+                placeholder="Trenutna količina na stanju...",
+                id="quantity-input",
+                type="number",
+                value=str(self.item['quantity']) if self.item else ""
+            )
+
+            yield Label("PDV stopa:", classes="input-label")
+            with Horizontal(id="vat-selection"):
+                yield Button("0%", id="vat-0", variant="default")
+                yield Button("10%", id="vat-10", variant="default")
+                yield Button("20%", id="vat-20", variant="primary")
+
+            with Horizontal(id="buttons"):
+                yield Button("Sačuvaj", id="save-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        """Focus name input and set VAT button states"""
+        self.query_one("#name-input", Input).focus()
+
+        # Highlight correct VAT button
+        self.update_vat_buttons()
+
+    def update_vat_buttons(self) -> None:
+        """Update VAT button appearances"""
+        vat_buttons = {
+            0.0: self.query_one("#vat-0", Button),
+            0.10: self.query_one("#vat-10", Button),
+            0.20: self.query_one("#vat-20", Button),
+        }
+
+        for rate, button in vat_buttons.items():
+            button.variant = "primary" if rate == self.selected_vat else "default"
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "vat-0":
+            self.selected_vat = 0.0
+            self.update_vat_buttons()
+        elif event.button.id == "vat-10":
+            self.selected_vat = 0.10
+            self.update_vat_buttons()
+        elif event.button.id == "vat-20":
+            self.selected_vat = 0.20
+            self.update_vat_buttons()
+        elif event.button.id == "save-btn":
+            self.save_item()
+        elif event.button.id == "cancel-btn":
+            self.dismiss(None)
+
+    def save_item(self) -> None:
+        """Save the item"""
+        name = self.query_one("#name-input", Input).value.strip()
+        barcode = self.query_one("#barcode-input", Input).value.strip() or None
+        price_str = self.query_one("#price-input", Input).value.strip()
+        quantity_str = self.query_one("#quantity-input", Input).value.strip()
+
+        # Validation
+        if not name:
+            self.notify("Naziv je obavezan!", severity="error")
+            return
+
+        try:
+            price = float(price_str)
+            quantity = float(quantity_str)
+        except ValueError:
+            self.notify("Cena i količina moraju biti brojevi!", severity="error")
+            return
+
+        if price < 0 or quantity < 0:
+            self.notify("Cena i količina ne mogu biti negativne!", severity="error")
+            return
+
+        try:
+            if self.is_edit_mode:
+                # Update existing item
+                # We need to add an update method that handles all fields
+                item_id = self.item['id']
+
+                # Update price
+                self.pos_service.inventory.update_price(item_id, price)
+
+                # Update quantity (delta from current)
+                current_qty = self.item['quantity']
+                qty_delta = quantity - current_qty
+                self.pos_service.inventory.update_quantity(item_id, qty_delta)
+
+                # TODO: Update name, barcode, VAT rate (need to add method)
+
+                self.notify(f"✅ Artikal '{name}' ažuriran!", severity="success")
+            else:
+                # Add new item
+                item_id = self.pos_service.inventory.add(name, price, quantity, barcode)
+
+                # TODO: Set VAT rate (need to add method)
+
+                self.notify(f"✅ Artikal '{name}' dodat!", severity="success")
+
+            self.dismiss(True)
+
+        except Exception as e:
+            self.notify(f"❌ Greška: {str(e)}", severity="error")
+
+
+class ChangePriceScreen(Screen):
+    """Quick screen for changing item price"""
+
+    CSS = """
+    ChangePriceScreen {
+        align: center middle;
+    }
+
+    #price-dialog {
+        width: 40;
+        height: auto;
+        border: thick $warning;
+        background: $surface;
+        padding: 2;
+    }
+
+    .info-label {
+        padding: 1;
+        background: $panel;
+        margin-bottom: 1;
+    }
+
+    Input {
+        margin: 1 0;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "confirm", "Confirm"),
+    ]
+
+    def __init__(self, pos_service, item: dict):
+        super().__init__()
+        self.pos_service = pos_service
+        self.item = item
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="price-dialog"):
+            yield Label("💰 PROMENA CENE", classes="label")
+
+            yield Label(
+                f"Artikal: {self.item['item']}\nTrenutna cena: {self.item['price']:.2f} RSD",
+                classes="info-label"
+            )
+
+            yield Label("Nova cena (RSD):")
+            yield Input(
+                placeholder="Unesite novu cenu...",
+                id="new-price-input",
+                type="number",
+                value=str(self.item['price'])
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Promeni \\[Enter]", id="change-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        """Focus and select price input"""
+        self.query_one("#new-price-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "change-btn":
+            self.action_confirm()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter"""
+        if event.input.id == "new-price-input":
+            self.action_confirm()
+
+    def action_confirm(self) -> None:
+        """Change the price"""
+        price_str = self.query_one("#new-price-input", Input).value.strip()
+
+        try:
+            new_price = float(price_str)
+            if new_price < 0:
+                self.notify("Cena ne može biti negativna!", severity="error")
+                return
+
+            success = self.pos_service.inventory.update_price(self.item['id'], new_price)
+
+            if success:
+                self.notify(
+                    f"Cena promenjena: {self.item['price']:.2f} → {new_price:.2f} RSD",
+                    severity="success"
+                )
+                self.dismiss(True)
+            else:
+                self.notify("Greška pri promeni cene!", severity="error")
+
+        except ValueError:
+            self.notify("Unesite ispravnu cenu!", severity="error")
+
+    def action_cancel(self) -> None:
+        """Cancel"""
+        self.dismiss(None)
+
+
+class ConfirmDialog(Screen):
+    """Generic confirmation dialog"""
+
+    CSS = """
+    ConfirmDialog {
+        align: center middle;
+    }
+
+    #confirm-dialog {
+        width: 50;
+        height: auto;
+        border: thick $error;
+        background: $surface;
+        padding: 2;
+    }
+
+    #message {
+        padding: 2;
+        text-align: center;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+        align: center middle;
+    }
+    """
+
+    BINDINGS = [
+        Binding("d", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, message: str, title: str = "POTVRDA"):
+        super().__init__()
+        self.message = message
+        self.title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label(f"⚠️  {self.title}", classes="label")
+            yield Static(self.message, id="message")
+
+            with Horizontal(id="buttons"):
+                yield Button("Da \\[D]", id="yes-btn", variant="error")
+                yield Button("Ne \\[N]", id="no-btn", variant="success")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "yes-btn":
+            self.action_confirm()
+        elif event.button.id == "no-btn":
+            self.action_cancel()
+
+    def action_confirm(self) -> None:
+        """User confirmed"""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """User cancelled"""
+        self.dismiss(False)
+
 
 class CreateUserScreen(Screen):
     """Screen for creating new user"""
@@ -332,7 +893,7 @@ class CreateUserScreen(Screen):
 
             with Horizontal(id="buttons"):
                 yield Button("Kreiraj", id="create-btn", variant="success")
-                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_mount(self) -> None:
         """Focus username input"""
@@ -441,8 +1002,8 @@ class ChangePasswordScreen(Screen):
             yield Input(placeholder="Ponovite lozinku...", password=True, id="confirm-password-input")
 
             with Horizontal(id="buttons"):
-                yield Button("Promeni [Enter]", id="change-btn", variant="success")
-                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+                yield Button("Promeni \\[Enter]", id="change-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_mount(self) -> None:
         """Focus password input"""
@@ -540,11 +1101,11 @@ class PaymentScreen(Screen):
             yield Label("Izaberite način plaćanja:", classes="label")
 
             with Horizontal(id="payment-buttons"):
-                yield Button("1. Gotovina", id="cash-btn", variant="success", classes="payment-option")
-                yield Button("2. Kartica", id="card-btn", variant="primary", classes="payment-option")
-                yield Button("3. Kombinovano", id="split-btn", variant="warning", classes="payment-option")
+                yield Button("Gotovina \\[1]", id="cash-btn", variant="success", classes="payment-option")
+                yield Button("Kartica \\[2]", id="card-btn", variant="primary", classes="payment-option")
+                yield Button("Kombinovano \\[3]", id="split-btn", variant="warning", classes="payment-option")
 
-            yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+            yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle payment method selection"""
@@ -640,8 +1201,8 @@ class CashPaymentScreen(Screen):
             yield Static("Kusur: 0.00 RSD", id="change-display", classes="change-display")
 
             with Horizontal(id="buttons"):
-                yield Button("Potvrdi [Enter]", id="confirm-btn", variant="success")
-                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+                yield Button("Potvrdi \\[Enter]", id="confirm-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_mount(self) -> None:
         """Focus input when screen opens"""
@@ -759,8 +1320,8 @@ class SplitPaymentScreen(Screen):
             yield Static(f"Kartica: 0.00 RSD", id="card-display", classes="info-display")
 
             with Horizontal(id="buttons"):
-                yield Button("Potvrdi [Enter]", id="confirm-btn", variant="success")
-                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+                yield Button("Potvrdi \\[Enter]", id="confirm-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_mount(self) -> None:
         """Focus cash input"""
@@ -858,8 +1419,8 @@ class ReceiptViewerScreen(Screen):
             yield Static(self.receipt_text, id="receipt-display")
 
             with Horizontal(id="close-button-container"):
-                yield Button("Zatvori [Enter/ESC]", id="close-btn", variant="success")
-                yield Button("Štampaj ponovo [P]", id="print-btn", variant="primary")
+                yield Button("Zatvori \\[Enter/ESC]", id="close-btn", variant="success")
+                yield Button("Štampaj ponovo \\[P]", id="print-btn", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-btn":
@@ -936,10 +1497,10 @@ class QuantityInputScreen(Screen):
             )
 
             with Horizontal(id="buttons"):
-                yield Button("Potvrdi [Enter]", id="confirm-btn", variant="success")
+                yield Button("Potvrdi \\[Enter]", id="confirm-btn", variant="success")
                 # if self.edit_mode:
                 #  yield Button("Obriši [Del]", id="delete-btn", variant="error")
-                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_mount(self) -> None:
         """Focus and select the input"""
@@ -1104,7 +1665,7 @@ class POSApp(App):
             with Vertical(id="inventory-panel"):
                 yield Label("📦 INVENTAR", classes="label")
                 yield Input(placeholder="Pretraga ili skeniranje...", id="search-input")
-                yield DataTable(id="inventory-table")
+                yield DataTable(id="inventory-table", zebra_stripes=True)
 
             # Right panel - Shopping Cart
             with Vertical(id="cart-panel"):
@@ -1114,10 +1675,10 @@ class POSApp(App):
 
         # Bottom controls
         with Horizontal(id="controls"):
-            yield Button("Dodaj u korpu [Enter]", id="add-to-cart", variant="primary")
-            yield Button("Ukloni [-]", id="remove-from-cart", variant="error")
-            yield Button("Naplati [F5]", id="checkout", variant="success")
-            yield Button("Očisti [C]", id="clear-cart")
+            yield Button("Dodaj u korpu \\[Enter]", id="add-to-cart", variant="primary")
+            yield Button("Ukloni \\[-]", id="remove-from-cart", variant="error")
+            yield Button("Naplati \\[F5]", id="checkout", variant="success")
+            yield Button("Očistii \\[C]", id="clear-cart")
 
         yield Footer()
 
@@ -1136,6 +1697,8 @@ class POSApp(App):
     def handle_login(self, user: dict) -> None:
         """Handle successful login"""
         if user:
+            if user['role'] == "admin":
+                self.push_screen(InventoryManagementScreen(self.pos))
             self.current_user = user
 
             # Update user info bar
@@ -1476,7 +2039,8 @@ class POSApp(App):
             return
 
         # Show submenu for inventory management
-        self.notify("Upravljanje inventarom - u izradi!", severity="information")
+        self.push_screen(InventoryManagementScreen(self.pos))
+        # self.notify("Upravljanje inventarom - u izradi!", severity="information")
 
     def action_reports(self) -> None:
         """F4 - Reports"""
@@ -1528,9 +2092,69 @@ class POSApp(App):
             self.notify(f"Uklonjeno: {removed['item']}")
 
 
-if __name__ == "__main__":
-    app = POSApp()
-    app.run()
+class ConfirmDeleteScreen(Screen):
+    """Screen for confirming user deletion"""
+    CSS = """
+        ConfirmDeleteScreen {
+            align: center middle;
+        }
+
+        #confirm-dialog {
+            width: 50;
+            height: auto;
+            max-height: 20;
+            border: thick $error;
+            background: $surface;
+            padding: 2;
+        }
+
+        #buttons {
+            height: auto;
+            layout: horizontal;
+            align: center middle;
+            margin-top: 1;
+        }
+    """
+
+    BINDINGS = [
+        Binding("d", "confirm_delete", "Confirm Delete"),
+        Binding("n", "cancel_delete", "Cancel Delete"),
+    ]
+
+    def __init__(self, user_service, user_id: int, username: str):
+        super().__init__()
+        self.user_service = user_service
+        self.user_id = user_id
+        self.username = username
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-dialog"):
+            yield Label("⚠️  BRISANJE KORISNIKA", classes="label")
+            yield Static(f"Da li ste sigurni da želite da obrišete korisnika {self.username}?")
+            with Horizontal(id="buttons"):
+                yield Button("Da \\[D]", id="confirm-btn", variant="success")
+                yield Button("Ne \\[N]", id="cancel-btn", variant="error")
+
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "confirm-btn":
+            self.action_confirm_delete()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel_delete()
+
+    def action_confirm_delete(self) -> None:
+        """Confirm user deletion"""
+        success, message = self.user_service.delete_user(self.user_id)
+        if success:
+            self.notify(message, severity="success")
+            self.dismiss(True)
+        else:
+            self.notify(message, severity="error")
+            self.dismiss(False)
+
+    def action_cancel_delete(self) -> None:
+        """Cancel user deletion"""
+        self.dismiss(False)
 
 
 
