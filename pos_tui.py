@@ -824,6 +824,529 @@ class InvoiceManagementScreen(Screen):
                 f"{item['quantity']:.2f}",
                 f"{total:.2f}"
             )
+            
+
+class ReportsScreen(Screen):
+    """Screen for viewing reports"""
+    
+    CSS = """
+    ReportsScreen {
+        background: $surface;
+    }
+    
+    #reports-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #report-menu {
+        width: 40;
+        height: auto;
+        border: solid $primary;
+        padding: 2;
+        align: center top;
+    }
+    
+    .menu-button {
+        width: 100%;
+        margin: 1 0;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("1", "daily_report", "Daily Report"),
+        Binding("2", "cash_reconciliation", "Cash Count"),
+        Binding("3", "low_stock", "Low Stock"),
+    ]
+    
+    def __init__(self, daily_reports, reports, is_admin: bool):
+        super().__init__()
+        self.daily_reports = daily_reports
+        self.reports = reports
+        self.is_admin = is_admin
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="reports-container"):
+            yield Label("📊 IZVEŠTAJI", classes="label")
+            
+            with Vertical(id="report-menu"):
+                yield Button("1. Dnevni izveštaj", id="daily-btn", variant="primary", classes="menu-button")
+                yield Button("2. Zatvaranje kase", id="cash-btn", variant="success", classes="menu-button")
+                yield Button("3. Nisko stanje zaliha", id="stock-btn", variant="warning", classes="menu-button")
+                
+                if self.is_admin:
+                    yield Button("4. Nedeljni izveštaj", id="weekly-btn", variant="default", classes="menu-button")
+                    yield Button("5. Mesečni izveštaj", id="monthly-btn", variant="default", classes="menu-button")
+                    yield Button("6. Top artikli", id="top-btn", variant="default", classes="menu-button")
+                
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="error", classes="menu-button")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "daily-btn":
+            self.action_daily_report()
+        elif event.button.id == "cash-btn":
+            self.action_cash_reconciliation()
+        elif event.button.id == "stock-btn":
+            self.action_low_stock()
+        elif event.button.id == "weekly-btn" and self.is_admin:
+            self.notify("Nedeljni izveštaj - u izradi", severity="information")
+        elif event.button.id == "monthly-btn" and self.is_admin:
+            self.notify("Mesečni izveštaj - u izradi", severity="information")
+        elif event.button.id == "top-btn" and self.is_admin:
+            self.show_top_items()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def action_daily_report(self) -> None:
+        """Show daily report"""
+        self.app.push_screen(DailyReportScreen(self.daily_reports))
+    
+    def action_cash_reconciliation(self) -> None:
+        """Cash count screen"""
+        self.app.push_screen(CashReconciliationScreen(self.daily_reports))
+    
+    def action_low_stock(self) -> None:
+        """Low stock warning"""
+        self.app.push_screen(LowStockScreen(self.reports))
+    
+    def show_top_items(self) -> None:
+        """Show top selling items"""
+        self.app.push_screen(TopItemsScreen(self.reports))
+    
+    def action_close(self) -> None:
+        """Close reports"""
+        self.dismiss()
+
+
+class DailyReportScreen(Screen):
+    """Display daily sales report"""
+    
+    CSS = """
+    DailyReportScreen {
+        background: $surface;
+    }
+    
+    #daily-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #report-content {
+        height: 1fr;
+        border: solid $primary;
+        padding: 2;
+        overflow-y: scroll;
+    }
+    
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+    
+    def __init__(self, daily_reports):
+        super().__init__()
+        self.daily_reports = daily_reports
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="daily-container"):
+            yield Label("📊 DNEVNI IZVEŠTAJ", classes="label")
+            
+            yield Input(
+                placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
+                id="date-input"
+            )
+            
+            yield Static("", id="report-content")
+            
+            with Horizontal(id="controls"):
+                yield Button("Prikaži", id="show-btn", variant="primary")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Load today's report by default"""
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = today
+        self.load_report(today)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "show-btn":
+            date = self.query_one("#date-input", Input).value.strip()
+            self.load_report(date)
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter in date input"""
+        if event.input.id == "date-input":
+            self.load_report(event.value.strip())
+    
+    def load_report(self, date: str) -> None:
+        """Load and display report"""
+        from datetime import datetime
+        
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        report = self.daily_reports.generate_daily_report(date)
+        
+        if not report['has_sales']:
+            self.query_one("#report-content", Static).update(
+                f"\n{report['message']}"
+            )
+            return
+        
+        # Format report
+        content = []
+        content.append("=" * 60)
+        content.append(f"DNEVNI IZVEŠTAJ ZA {date}".center(60))
+        content.append("=" * 60)
+        
+        summary = report['summary']
+        content.append("\n📊 OSNOVNI PODACI:")
+        content.append(f"   Ukupan prihod:        {summary['total_revenue']:>12.2f} RSD")
+        content.append(f"   Broj transakcija:     {summary['total_transactions']:>12}")
+        content.append(f"   Prodato artikala:     {summary['total_items_sold']:>12.2f}")
+        content.append(f"   Prosečna transakcija: {summary['avg_transaction']:>12.2f} RSD")
+        
+        payments = report['payments']
+        content.append("\n💳 NAČIN PLAĆANJA:")
+        content.append(f"   Gotovina:             {payments['cash']:>12.2f} RSD")
+        content.append(f"   Kartica:              {payments['card']:>12.2f} RSD")
+        content.append(f"   {'─'*40}")
+        content.append(f"   UKUPNO:               {payments['total']:>12.2f} RSD")
+        
+        content.append("\n📋 PDV REKAPITULACIJA:")
+        for vat_rate, data in report['vat_breakdown'].items():
+            vat_percent = int(vat_rate * 100)
+            content.append(f"   Stopa {vat_percent}%:")
+            content.append(f"      Osnovica:          {data['base']:>12.2f} RSD")
+            content.append(f"      PDV:               {data['vat']:>12.2f} RSD")
+            content.append(f"      Ukupno:            {data['total']:>12.2f} RSD")
+        
+        content.append("\n🏆 TOP 10 ARTIKALA:")
+        for i, (item_name, data) in enumerate(report['top_items'], 1):
+            content.append(f"   {i:2}. {item_name:<30} {data['quantity']:>6.0f} kom  {data['revenue']:>10.2f} RSD")
+        
+        content.append("\n⏰ PRODAJA PO SATIMA:")
+        for hour, data in report['hourly_sales']:
+            bar_length = int(data['revenue'] / 100)
+            bar = '█' * min(bar_length, 40)
+            content.append(f"   {hour}:00  {data['transactions']:>3} trans  {data['revenue']:>10.2f} RSD  {bar}")
+        
+        content.append("\n" + "=" * 60)
+        
+        self.query_one("#report-content", Static).update("\n".join(content))
+    
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class CashReconciliationScreen(Screen):
+    """Cash drawer reconciliation"""
+    
+    CSS = """
+    CashReconciliationScreen {
+        align: center middle;
+    }
+    
+    #cash-dialog {
+        width: 60;
+        height: auto;
+        border: thick $success;
+        background: $surface;
+        padding: 2;
+    }
+    
+    #result {
+        padding: 2;
+        margin: 1 0;
+        border: solid $accent;
+    }
+    
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+    
+    def __init__(self, daily_reports):
+        super().__init__()
+        self.daily_reports = daily_reports
+    
+    def compose(self) -> ComposeResult:
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        with Vertical(id="cash-dialog"):
+            yield Label("💰 ZATVARANJE KASE", classes="label")
+            
+            yield Label(f"Datum: {today}")
+            yield Label("Prebrojana gotovina u kasi:")
+            yield Input(placeholder="Iznos u dinarima...", id="cash-input", type="number")
+            
+            yield Static("", id="result")
+            
+            with Horizontal(id="buttons"):
+                yield Button("Proveri \\[Enter]", id="check-btn", variant="primary")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        self.query_one("#cash-input", Input).focus()
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "check-btn":
+            self.check_cash()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "cash-input":
+            self.check_cash()
+    
+    def check_cash(self) -> None:
+        """Check cash reconciliation"""
+        from datetime import datetime
+        
+        cash_str = self.query_one("#cash-input", Input).value.strip()
+        
+        if not cash_str:
+            self.notify("Unesite iznos!", severity="error")
+            return
+        
+        try:
+            actual_cash = float(cash_str)
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            reconciliation = self.daily_reports.generate_cash_reconciliation(today, actual_cash)
+            
+            result = []
+            result.append("=" * 50)
+            result.append("ZATVARANJE KASE")
+            result.append("=" * 50)
+            result.append(f"\nDatum: {reconciliation['date']}")
+            result.append(f"\nOčekivana gotovina:    {reconciliation['expected_cash']:>12.2f} RSD")
+            result.append(f"Prebrojana gotovina:   {actual_cash:>12.2f} RSD")
+            result.append(f"Izdati kusur:          {reconciliation['total_change_given']:>12.2f} RSD")
+            result.append("─" * 50)
+            
+            diff = reconciliation['difference']
+            if reconciliation['is_balanced']:
+                result.append(f"Status: ✅ URAVNOTEŽENO")
+            elif diff > 0:
+                result.append(f"Status: ⚠️  VIŠAK: {diff:>12.2f} RSD")
+            else:
+                result.append(f"Status: ❌ MANJAK: {abs(diff):>12.2f} RSD")
+            
+            result.append("=" * 50)
+            
+            self.query_one("#result", Static).update("\n".join(result))
+            
+        except ValueError:
+            self.notify("Unesite ispravan iznos!", severity="error")
+    
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class LowStockScreen(Screen):
+    """Low stock warning screen"""
+    
+    CSS = """
+    LowStockScreen {
+        background: $surface;
+    }
+    
+    #stock-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #stock-table {
+        height: 1fr;
+        border: solid $warning;
+    }
+    
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+    
+    def __init__(self, reports):
+        super().__init__()
+        self.reports = reports
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="stock-container"):
+            yield Label("⚠️  NISKO STANJE ZALIHA", classes="label")
+            
+            with Horizontal():
+                yield Label("Minimalno stanje:")
+                yield Input(value="10", id="threshold-input", type="number")
+                yield Button("Prikaži", id="show-btn", variant="primary")
+            
+            yield DataTable(id="stock-table")
+            
+            with Horizontal(id="controls"):
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Setup table and load default"""
+        table = self.query_one("#stock-table", DataTable)
+        table.add_columns("ID", "Artikal", "Trenutno stanje", "Barkod")
+        table.cursor_type = "row"
+        
+        self.load_low_stock(10.0)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "show-btn":
+            self.load_from_input()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "threshold-input":
+            self.load_from_input()
+    
+    def load_from_input(self) -> None:
+        """Load based on threshold input"""
+        threshold_str = self.query_one("#threshold-input", Input).value.strip()
+        
+        try:
+            threshold = float(threshold_str)
+            self.load_low_stock(threshold)
+        except ValueError:
+            self.notify("Unesite ispravan broj!", severity="error")
+    
+    def load_low_stock(self, threshold: float) -> None:
+        """Load items below threshold"""
+        low_stock = self.reports.low_stock_report(threshold)
+        
+        table = self.query_one("#stock-table", DataTable)
+        table.clear()
+        
+        if not low_stock:
+            self.notify("✅ Svi artikli imaju dovoljno zaliha!", severity="success")
+            return
+        
+        for item in low_stock:
+            table.add_row(
+                str(item['id']),
+                item['item'],
+                f"{item['quantity']:.2f}",
+                item.get('barcode') or ""
+            )
+        
+        self.notify(f"⚠️  {len(low_stock)} artikala sa niskim stanjem", severity="warning")
+    
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class TopItemsScreen(Screen):
+    """Top selling items report"""
+    
+    CSS = """
+    TopItemsScreen {
+        background: $surface;
+    }
+    
+    #top-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #top-table {
+        height: 1fr;
+        border: solid $success;
+    }
+    
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+    
+    def __init__(self, reports):
+        super().__init__()
+        self.reports = reports
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="top-container"):
+            yield Label("🏆 TOP PRODAVANI ARTIKLI", classes="label")
+            
+            yield DataTable(id="top-table")
+            
+            with Horizontal(id="controls"):
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Setup and load top items"""
+        table = self.query_one("#top-table", DataTable)
+        table.add_columns("Rank", "Artikal", "Prodato", "Prihod (RSD)")
+        
+        # Get sales summary and extract top items
+        summary = self.reports.sales_summary(1000)  # Get more sales for better data
+        
+        # Aggregate by item
+        from collections import defaultdict
+        item_stats = defaultdict(lambda: {'quantity': 0, 'revenue': 0})
+        
+        for sale in summary['sales']:
+            item_name = sale['item']
+            item_stats[item_name]['quantity'] += sale['quantity']
+            item_stats[item_name]['revenue'] += sale['total']
+        
+        # Sort by revenue
+        top_items = sorted(
+            item_stats.items(),
+            key=lambda x: x[1]['revenue'],
+            reverse=True
+        )[:20]  # Top 20
+        
+        for i, (item_name, stats) in enumerate(top_items, 1):
+            table.add_row(
+                str(i),
+                item_name,
+                f"{stats['quantity']:.0f}",
+                f"{stats['revenue']:.2f}"
+            )
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close-btn":
+            self.action_close()
+    
+    def action_close(self) -> None:
+        self.dismiss()
 
 
 class AddInvoiceItemScreen(Screen):
@@ -2443,14 +2966,15 @@ class POSApp(App):
         # self.notify("Upravljanje inventarom - u izradi!", severity="information")
 
     def action_reports(self) -> None:
-        """F4 - Reports"""
         # Cashiers can see basic reports, admins see all
-        if self.is_admin():
-            # Admin sees full reports menu
-            self.notify("Izveštaji - u izradi!", severity="information")
-        else:
-            # Cashier sees limited reports
-            self.notify("Dnevni izveštaj - u izradi!", severity="information")
+        """F4 - Reports"""
+        self.push_screen(
+            ReportsScreen(
+                self.daily_reports,
+                self.reports,
+                self.is_admin()
+            )
+        ) 
 
     def action_show_help(self) -> None:
         """F1 - Show help"""
