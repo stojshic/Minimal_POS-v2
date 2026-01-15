@@ -8,7 +8,7 @@ from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Header, Footer, Button, DataTable, Input, Label, Static
 from textual.binding import Binding
 from textual.screen import Screen
-
+from time import time
 from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
     InvoiceRepository, PaymentRepository, ReceiptRepository,
@@ -472,6 +472,14 @@ class InventoryManagementScreen(Screen):
         if result:
             self.load_inventory()
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter key (immediate) or double-click (mouse) on inventory table"""
+        if event.data_table.id == "inventory-table":
+            # For keyboard (Enter), activate immediately
+            # For mouse clicks, require double-click
+            # We can't distinguish perfectly, but Enter is more common, so just activate
+            event.stop()
+            self.action_edit_item()
 
 class AddEditItemScreen(Screen):
     """Screen for adding or editing inventory item"""
@@ -599,7 +607,7 @@ class AddEditItemScreen(Screen):
         elif event.button.id == "save-btn":
             self.save_item()
         elif event.button.id == "cancel-btn":
-            self.dismiss(None)
+            self.action_cancel()
 
     def save_item(self) -> None:
         """Save the item"""
@@ -654,6 +662,373 @@ class AddEditItemScreen(Screen):
         except Exception as e:
             self.notify(f"❌ Greška: {str(e)}", severity="error")
 
+    def action_cancel(self) -> None:
+        """Cancel"""
+        self.dismiss(None)
+
+
+class InvoiceManagementScreen(Screen):
+    """Screen for receiving goods via invoices"""
+
+    CSS = """
+    InvoiceManagementScreen {
+        background: $surface;
+    }
+
+    #invoice-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #invoice-header {
+        height: auto;
+        background: $panel;
+        padding: 1;
+        margin-bottom: 1;
+    }
+
+    #invoice-items-table {
+        height: 1fr;
+        border: solid $primary;
+        margin-bottom: 1;
+    }
+
+    #invoice-controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        background: $panel;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("n", "add_item", "Add Item"),
+        Binding("d", "remove_item", "Remove Item"),
+        Binding("s", "save_invoice", "Save Invoice"),
+    ]
+
+    def __init__(self, pos_service):
+        super().__init__()
+        self.pos_service = pos_service
+        self.invoice_items = []  # Items to add to invoice
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="invoice-container"):
+            yield Label("📄 PRIJEM ROBE - NOVA FAKTURA", classes="label")
+
+            with Vertical(id="invoice-header"):
+                yield Label("Broj fakture:")
+                yield Input(placeholder="Unesite broj fakture...", id="invoice-number-input")
+
+            yield Label("Stavke fakture:")
+            yield DataTable(id="invoice-items-table")
+
+            with Horizontal(id="invoice-controls"):
+                yield Button("Dodaj stavku \\[N]", id="add-item-btn", variant="success")
+                yield Button("Ukloni \\[D]", id="remove-item-btn", variant="error")
+                yield Button("Sačuvaj fakturu \\[S]", id="save-btn", variant="primary")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+
+    def on_mount(self) -> None:
+        """Setup table"""
+        table = self.query_one("#invoice-items-table", DataTable)
+        table.add_columns("Naziv", "Barkod", "Cena", "Količina", "Ukupno")
+        table.cursor_type = "row"
+
+        self.query_one("#invoice-number-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "add-item-btn":
+            self.action_add_item()
+        elif event.button.id == "remove-item-btn":
+            self.action_remove_item()
+        elif event.button.id == "save-btn":
+            self.action_save_invoice()
+        elif event.button.id == "cancel-btn":
+            self.action_close()
+
+    def action_add_item(self) -> None:
+        """Add item to invoice"""
+        self.app.push_screen(
+            AddInvoiceItemScreen(self.pos_service),
+            self.handle_item_added
+        )
+
+    def action_remove_item(self) -> None:
+        """Remove selected item from invoice"""
+        table = self.query_one("#invoice-items-table", DataTable)
+        if table.cursor_row is not None and self.invoice_items:
+            del self.invoice_items[table.cursor_row]
+            self.update_items_display()
+            self.notify("Stavka uklonjena", severity="warning")
+
+    def action_save_invoice(self) -> None:
+        """Save invoice and update inventory"""
+        invoice_number = self.query_one("#invoice-number-input", Input).value.strip()
+
+        if not invoice_number:
+            self.notify("Unesite broj fakture!", severity="error")
+            return
+
+        if not self.invoice_items:
+            self.notify("Dodajte barem jednu stavku!", severity="error")
+            return
+
+        # Convert to InvoiceItem format
+        from pos_business_logic import InvoiceItem
+
+        items = [
+            InvoiceItem(
+                item_name=item['name'],
+                price=item['price'],
+                quantity=item['quantity'],
+                barcode=item.get('barcode')
+            )
+            for item in self.invoice_items
+        ]
+
+        success, message, invoice_id = self.pos_service.create_invoice_from_items(
+            invoice_number,
+            items
+        )
+
+        if success:
+            self.notify(f"✅ {message}", severity="success")
+            self.dismiss(True)
+        else:
+            self.notify(f"❌ {message}", severity="error")
+
+    def action_close(self) -> None:
+        """Close without saving"""
+        self.dismiss(None)
+
+    def handle_item_added(self, item_data) -> None:
+        """Callback when item is added"""
+        if item_data:
+            self.invoice_items.append(item_data)
+            self.update_items_display()
+
+    def update_items_display(self) -> None:
+        """Refresh items table"""
+        table = self.query_one("#invoice-items-table", DataTable)
+        table.clear()
+
+        for item in self.invoice_items:
+            total = item['price'] * item['quantity']
+            table.add_row(
+                item['name'],
+                item.get('barcode') or "",
+                f"{item['price']:.2f}",
+                f"{item['quantity']:.2f}",
+                f"{total:.2f}"
+            )
+
+
+class AddInvoiceItemScreen(Screen):
+    """Screen for adding item to invoice"""
+
+    CSS = """
+    AddInvoiceItemScreen {
+        align: center middle;
+    }
+
+    #item-dialog {
+        width: 60;
+        height: auto;
+        border: thick $success;
+        background: $surface;
+        padding: 2;
+    }
+
+    .input-label {
+        padding: 1 0 0 0;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    #search-results {
+        height: 10;
+        border: solid $accent;
+        margin: 1 0;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "confirm", "Confirm"),
+    ]
+
+    def __init__(self, pos_service):
+        super().__init__()
+        self.pos_service = pos_service
+        self.selected_item = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="item-dialog"):
+            yield Label("➕ DODAJ STAVKU NA FAKTURU", classes="label")
+
+            yield Label("Pretraga postojećih artikala:", classes="input-label")
+            yield Input(placeholder="Ime ili barkod...", id="search-input")
+
+            yield DataTable(id="search-results")
+
+            yield Label("--- ILI unesi nove podatke ---", classes="input-label")
+
+            yield Label("Naziv artikla:", classes="input-label")
+            yield Input(placeholder="Pun naziv...", id="name-input")
+
+            yield Label("Barkod (opciono):", classes="input-label")
+            yield Input(placeholder="Skeniraj ili unesi...", id="barcode-input")
+
+            yield Label("Cena:", classes="input-label")
+            yield Input(placeholder="Cena po komadu...", id="price-input", type="number")
+
+            yield Label("Količina:", classes="input-label")
+            yield Input(placeholder="Količina...", id="quantity-input", type="number")
+
+            with Horizontal(id="buttons"):
+                yield Button("Dodaj \\[Enter]", id="add-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        """Setup search results table"""
+        table = self.query_one("#search-results", DataTable)
+        table.add_columns("ID", "Naziv", "Barkod", "Cena")
+        table.cursor_type = "row"
+
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live search existing items"""
+        if event.input.id == "search-input":
+            search_term = event.value.strip()
+            if search_term:
+                # Try barcode first if it looks like a barcode (longer than 8 chars)
+                items = []
+
+                if len(search_term) > 8:
+                    barcode_item = self.pos_service.find_item_by_barcode(search_term)
+                    if barcode_item:
+                        items = [barcode_item]
+
+                # If not found by barcode, search by name
+                if not items:
+                    items = self.pos_service.search_inventory(search_term)
+
+                table = self.query_one("#search-results", DataTable)
+                table.clear()
+
+                for item in items[:5]:  # Show top 5 matches
+                    table.add_row(
+                        str(item['id']),
+                        item['item'],
+                        item.get('barcode') or "",
+                        f"{item['price']:.2f}"
+                    )
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in any input field"""
+        event.stop()
+
+        if event.input.id == "search-input":
+            # Already handled above
+            search_term = event.value.strip()
+
+            if not search_term:
+                return
+
+            # Try barcode first
+            item = self.pos_service.find_item_by_barcode(search_term)
+
+            if item:
+                # Barcode found - auto-select it and fill form
+                self.select_item_for_invoice(item)
+                # Clear search
+                event.input.value = ""
+            else:
+                # Not a barcode - check if there's exactly one search result
+                table = self.query_one("#search-results", DataTable)
+                if table.row_count == 1:
+                    # Auto-select the only result
+                    row = table.get_row_at(0)
+                    item_id = int(row[0])
+                    item = self.pos_service.get_inventory_item(item_id)
+                    if item:
+                        self.select_item_for_invoice(item)
+                        event.input.value = ""
+
+        elif event.input.id in ["name-input", "barcode-input", "price-input", "quantity-input"]:
+            self.add_item()
+
+    def select_item_for_invoice(self, item: dict) -> None:
+        """Pre-fill form with selected item"""
+        self.query_one("#name-input", Input).value = item['item']
+        self.query_one("#barcode-input", Input).value = item.get('barcode') or ""
+        self.query_one("#price-input", Input).value = str(item['price'])
+
+        # Focus quantity so user can immediately type quantity
+        self.query_one("#quantity-input", Input).focus()
+
+        self.notify(f"✓ {item['item']} - unesite količinu", severity="information")
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """When selecting from search results"""
+        if event.data_table.id == "search-results":
+            event.stop()
+
+            row = event.data_table.get_row_at(event.cursor_row)
+            item_id = int(row[0])
+            item = self.pos_service.get_inventory_item(item_id)
+
+            if item:
+                self.select_item_for_invoice(item)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "add-btn":
+            self.add_item()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def add_item(self) -> None:
+        """Add the item"""
+        name = self.query_one("#name-input", Input).value.strip()
+        barcode = self.query_one("#barcode-input", Input).value.strip() or None
+        price_str = self.query_one("#price-input", Input).value.strip()
+        quantity_str = self.query_one("#quantity-input", Input).value.strip()
+
+        if not name or not price_str or not quantity_str:
+            self.notify("Naziv, cena i količina su obavezni!", severity="error")
+            return
+
+        try:
+            price = float(price_str)
+            quantity = float(quantity_str)
+
+            item_data = {
+                'name': name,
+                'barcode': barcode,
+                'price': price,
+                'quantity': quantity
+            }
+
+            self.dismiss(item_data)
+
+        except ValueError:
+            self.notify("Cena i količina moraju biti brojevi!", severity="error")
+
+    def action_cancel(self) -> None:
+        """Cancel"""
+        self.dismiss(None)
 
 class ChangePriceScreen(Screen):
     """Quick screen for changing item price"""
@@ -1617,6 +1992,7 @@ class POSApp(App):
         Binding("f3", "inventory", "Inventory", show=True),
         Binding("f4", "reports", "Reports", show=True),
         Binding("f5", "checkout", "Checkout", show=True),
+        Binding("f6", "invoices", "Invoices", show=True),
         Binding("f8", "user_management", "Users", show=True),
         Binding("f9", "logout", "Logout", show=True),
         Binding("c", "clear_cart", "Clear Cart"),
@@ -1670,7 +2046,7 @@ class POSApp(App):
             # Right panel - Shopping Cart
             with Vertical(id="cart-panel"):
                 yield Label("🛒 KORPA", classes="label")
-                yield DataTable(id="cart-table")
+                yield DataTable(id="cart-table", zebra_stripes=True, cursor_type="row")
                 yield Static("UKUPNO: 0.00 RSD", id="total-label")
 
         # Bottom controls
@@ -1693,6 +2069,13 @@ class POSApp(App):
             return
 
         self.push_screen(UserManagementScreen(self.user_service))
+
+    def action_invoices(self) -> None:
+        """F6 - Invoice management (admin only)"""
+        if not self.require_admin("Prijem robe"):
+            return
+
+        self.push_screen(InvoiceManagementScreen(self.pos))
 
     def handle_login(self, user: dict) -> None:
         """Handle successful login"""
@@ -1925,6 +2308,10 @@ class POSApp(App):
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle row selection in tables (Enter key or click)"""
+        # Check if we're on modal/subscreen - if so, don't hande
+        if len(self.screen_stack) > 1:
+            return # We're in a modal, let it handle its own events
+
         if event.data_table.id == "inventory-table":
             # User selected an item from inventory
             row = event.data_table.get_row_at(event.cursor_row)
@@ -1934,6 +2321,19 @@ class POSApp(App):
                 self.push_screen(
                     QuantityInputScreen(item),
                     lambda qty: self.handle_quantity_input(item, qty)
+                )
+
+        elif event.data_table.id == "cart-table":
+            # User selected item from cart - open edit dialog
+            if event.cursor_row < len(self.cart):
+                cart_item = self.cart[event.cursor_row]
+                self.push_screen(
+                    QuantityInputScreen(
+                        item=cart_item,
+                        current_quantity=cart_item['quantity'],
+                        edit_mode=True
+                    ),
+                    lambda new_qty: self.handle_edit_quantity(event.cursor_row, new_qty)
                 )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
