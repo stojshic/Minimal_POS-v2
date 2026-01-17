@@ -114,6 +114,23 @@ class Database:
                     FOREIGN KEY (sale_id) REFERENCES sold_items(id) ON DELETE CASCADE
                 )
             """)
+            
+            # Refunds table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS refunds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    original_sale_id INTEGER NOT NULL,
+                    item TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    refund_amount REAL NOT NULL,
+                    reason TEXT,
+                    refund_method TEXT NOT NULL,
+                    processed_by INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (original_sale_id) REFERENCES sold_items(id),
+                    FOREIGN KEY (processed_by) REFERENCES users(id)
+                )
+            """)
 
             # Invoice table
             cursor.execute("""
@@ -595,3 +612,53 @@ class UserRepository:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
             return cursor.rowcount > 0
+
+
+class RefundRepository:
+    """Repository for refund operations"""
+    
+    def __init__(self, db: Database):
+        self.db = db
+    
+    def record_refund(
+        self, 
+        original_sale_id: int, 
+        item: str, 
+        quantity: float, 
+        refund_amount: float,
+        refund_method: str,
+        reason: str = "",
+        processed_by: Optional[int] = None
+    ) -> int:
+        """Record a refund transaction"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO refunds 
+                   (original_sale_id, item, quantity, refund_amount, reason, refund_method, processed_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (original_sale_id, item, quantity, refund_amount, reason, refund_method, processed_by)
+            )
+            return cursor.lastrowid
+    
+    def get_refunds_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """Get all refunds for a date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT * FROM refunds 
+                   WHERE DATE(created_at) = ?
+                   ORDER BY created_at DESC""",
+                (date,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_refunds_by_sale(self, sale_id: int) -> List[Dict[str, Any]]:
+        """Get all refunds for a specific sale"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM refunds WHERE original_sale_id = ?",
+                (sale_id,)
+            )
+            return [dict(row) for row in cursor.fetchall()]

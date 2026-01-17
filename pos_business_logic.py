@@ -685,3 +685,63 @@ class UserService:
             return True, f"Korisnik obrisan"
         else:
             return False, "Greška pri brisanju korisnika"
+
+
+class RefundService:
+    """Service for handling refunds and returns"""
+    
+    def __init__(self, sales_repo, inventory_repo, refund_repo):
+        self.sales = sales_repo
+        self.inventory = inventory_repo
+        self.refunds = refund_repo
+    
+    def process_refund(
+        self,
+        sale_id: int,
+        item_name: str,
+        quantity: float,
+        refund_method: str,
+        reason: str = "",
+        user_id: Optional[int] = None
+    ) -> Tuple[bool, str]:
+        """
+        Process a refund
+        
+        Args:
+            sale_id: Original sale ID
+            item_name: Item being returned
+            quantity: Quantity to refund
+            refund_method: 'cash' or 'card'
+            reason: Reason for return
+            user_id: User processing the refund
+            
+        Returns:
+            (success, message)
+        """
+        # Find the original sale
+        # Note: We'll need to add a method to get sale by ID
+        # For now, we'll calculate refund amount based on item
+        
+        # Get item from inventory to find current price
+        items = self.inventory.search(item_name)
+        if not items:
+            return False, f"Artikal '{item_name}' nije pronađen"
+        
+        item = items[0]
+        refund_amount = item['price'] * quantity
+        
+        # Record the refund
+        self.refunds.record_refund(
+            original_sale_id=sale_id,
+            item=item_name,
+            quantity=quantity,
+            refund_amount=refund_amount,
+            refund_method=refund_method,
+            reason=reason,
+            processed_by=user_id
+        )
+        
+        # Return items to inventory
+        self.inventory.update_quantity(item['id'], quantity)
+        
+        return True, f"Povraćaj: {quantity}x {item_name} = {refund_amount:.2f} RSD"

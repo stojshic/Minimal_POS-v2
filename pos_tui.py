@@ -4,18 +4,84 @@ Beautiful terminal interface
 """
 from typing import Optional
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Header, Footer, Button, DataTable, Input, Label, Static
 from textual.binding import Binding
-from textual.screen import Screen
+from textual.screen import Screen 
 from time import time
 from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
     InvoiceRepository, PaymentRepository, ReceiptRepository,
-    UserRepository
+    UserRepository, RefundRepository
 )
-from pos_business_logic import POSService, ReportService, PaymentInfo, DailyReportService, UserService
-from config import STORE_CONFIG
+from pos_business_logic import (
+        POSService, ReportService, PaymentInfo, DailyReportService, 
+        UserService, RefundService
+)
+from config import STORE_CONFIG, CONFIG
+
+class ConfirmDialog(Screen):
+    """Generic confirmation dialog"""
+    
+    CSS = """
+    ConfirmDialog {
+        align: center middle;
+    }
+    
+    #confirm-dialog {
+        width: 50;
+        height: auto;
+        border: thick $error;
+        background: $surface;
+        padding: 2;
+    }
+    
+    #message {
+        padding: 2;
+        text-align: center;
+    }
+    
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+        align: center middle;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("y", "confirm", "Yes"),
+        Binding("n", "cancel", "No"),
+        Binding("escape", "cancel", "Cancel"),
+    ]
+    
+    def __init__(self, message: str, title: str = "POTVRDA"):
+        super().__init__()
+        self.message = message
+        self.title = title
+    
+    def compose(self) -> ComposeResult:  # ← No parameters here!
+        with Vertical(id="confirm-dialog"):
+            yield Label(f"🟡  {self.title}", classes="label")
+            yield Static(self.message, id="message")
+            
+            with Horizontal(id="buttons"):
+                yield Button("Da \\[D]", id="yes-btn", variant="error")
+                yield Button("Ne \\[N]", id="no-btn", variant="success")
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "yes-btn":
+            self.action_confirm()
+        elif event.button.id == "no-btn":
+            self.action_cancel()
+    
+    def action_confirm(self) -> None:
+        """User confirmed"""
+        self.dismiss(True)
+    
+    def action_cancel(self) -> None:
+        """User cancelled"""
+        self.dismiss(False)
 
 
 class LoginScreen(Screen):
@@ -376,12 +442,17 @@ class InventoryManagementScreen(Screen):
 
         for item in items:
             vat_percent = int(item.get('vat_rate', 0.20) * 100)
+            stock_display = f"{item['quantity']:.2f}"
+            if item['quantity'] <= 0:
+                stock_display = f"{stock_display:<10}{'⛔':>2}"
+            elif item['quantity'] < CONFIG['low_stock_threshold']:
+                stock_display = f"{stock_display:<10}{'🟡':>2}"
             table.add_row(
                 str(item['id']),
                 item['item'],
                 item.get('barcode') or "",
                 f"{item['price']:.2f}",
-                f"{item['quantity']:.2f}",
+                stock_display,
                 f"{vat_percent}%"
             )
 
@@ -1148,7 +1219,7 @@ class CashReconciliationScreen(Screen):
             if reconciliation['is_balanced']:
                 result.append(f"Status: ✅ URAVNOTEŽENO")
             elif diff > 0:
-                result.append(f"Status: ⚠️  VIŠAK: {diff:>12.2f} RSD")
+                result.append(f"Status: 🟡  VIŠAK: {diff:>12.2f} RSD")
             else:
                 result.append(f"Status: ❌ MANJAK: {abs(diff):>12.2f} RSD")
             
@@ -1200,7 +1271,7 @@ class LowStockScreen(Screen):
     
     def compose(self) -> ComposeResult:
         with Vertical(id="stock-container"):
-            yield Label("⚠️  NISKO STANJE ZALIHA", classes="label")
+            yield Label("🟡  NISKO STANJE ZALIHA", classes="label")
             
             with Horizontal():
                 yield Label("Minimalno stanje:")
@@ -1259,7 +1330,7 @@ class LowStockScreen(Screen):
                 item.get('barcode') or ""
             )
         
-        self.notify(f"⚠️  {len(low_stock)} artikala sa niskim stanjem", severity="warning")
+        self.notify(f"🟡  {len(low_stock)} artikala sa niskim stanjem", severity="warning")
     
     def action_close(self) -> None:
         self.dismiss()
@@ -1703,7 +1774,7 @@ class ConfirmDialog(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
-            yield Label(f"⚠️  {self.title}", classes="label")
+            yield Label(f"🟡  {self.title}", classes="label")
             yield Static(self.message, id="message")
 
             with Horizontal(id="buttons"):
@@ -2456,6 +2527,18 @@ class POSApp(App):
         padding: 0 2;
     }
 
+    #low-stock-banner {
+        dock: top;
+        height: 1;
+        background: $warning;
+        color: $text;
+        content-align: center middle;
+        padding: 0 2;
+    }
+
+    #low-stock-banner.hidden {
+        display: none;
+    }
 
     #main-container {
         layout: horizontal;
@@ -2508,6 +2591,7 @@ class POSApp(App):
         text-align: center;
     }
     """
+
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("f1", "show_help", "Help", show=True),
@@ -2516,6 +2600,7 @@ class POSApp(App):
         Binding("f4", "reports", "Reports", show=True),
         Binding("f5", "checkout", "Checkout", show=True),
         Binding("f6", "invoices", "Invoices", show=True),
+        Binding("f7", "refunds", "Refunds", show=True),
         Binding("f8", "user_management", "Users", show=True),
         Binding("f9", "logout", "Logout", show=True),
         Binding("c", "clear_cart", "Clear Cart"),
@@ -2533,6 +2618,7 @@ class POSApp(App):
         sales_repo = SalesRepository(db)
         payment_repo = PaymentRepository(db)
         user_repo = UserRepository(db)  # ← NEW
+        refund_repo = RefundRepository(db)
 
         self.pos = POSService(
             inv_repo,
@@ -2545,6 +2631,7 @@ class POSApp(App):
         self.reports = ReportService(inv_repo, sales_repo)
         self.daily_reports = DailyReportService(sales_repo, payment_repo, inv_repo)
         self.user_service = UserService(user_repo)  # ← NEW
+        self.refund_service = RefundService(sales_repo, inv_repo, refund_repo)
 
         # Current logged in user
         self.current_user = None  # ← NEW
@@ -2557,6 +2644,7 @@ class POSApp(App):
         """Create child widgets"""
         yield Header()
         yield Static("", id="user-info") # Shows logged-in user
+        yield Static ("", id="low-stock-banner")
 
         # Main container with horizontal layout
         with Horizontal(id="main-container"):
@@ -2586,12 +2674,37 @@ class POSApp(App):
         # Show login screen first
         self.push_screen(LoginScreen(self.user_service), self.handle_login)
 
+    def update_low_stock_banner(self) -> None:
+        """Update low stock warning banner"""
+        if CONFIG['show_low_stock_banner']:
+            low_stock_items = self.reports.low_stock_report(CONFIG["low_stock_threshold"])
+            
+            banner = self.query_one("#low-stock-banner", Static)
+            
+            if low_stock_items:
+                count = len(low_stock_items)
+                # Show first 3 items
+                items_preview = ", ".join([item['item'] for item in low_stock_items[:3]])
+                if count > 3:
+                    items_preview += f" (+{count - 3} više)"
+                
+                banner.update(f"🟡  NISKO STANJE ({count}): {items_preview}")
+                banner.remove_class("hidden")
+            else:
+                banner.add_class("hidden")
+
     def action_user_management(self) -> None:
         """F8 - User Management (admin only)"""
         if not self.require_admin("Upravljanje korisnicima"):
             return
 
         self.push_screen(UserManagementScreen(self.user_service))
+
+    def action_refunds(self):
+        """F7 - Returns and refunds"""
+        self.push_screen(
+            RefundsScreen(self.pos, self.refund_service, self.current_user)
+        )
 
     def action_invoices(self) -> None:
         """F6 - Invoice management (admin only)"""
@@ -2633,6 +2746,9 @@ class POSApp(App):
 
             # Focus search input
             self.query_one("#search-input", Input).focus()
+
+            # Update low stock banner
+            self.update_low_stock_banner()
         else:
             # Login failed or cancelled - quit app
             self.exit()
@@ -2733,12 +2849,20 @@ class POSApp(App):
         for item in items:
             vat_rate = item.get('vat_rate', 0.20)
             vat_percent = int(vat_rate * 100)
+
+            # Add warning indicator for low stock
+            stock_display = f"{item['quantity']:.2f}"
+            if item['quantity'] <= 0:
+                stock_display = f"{stock_display:<10}{'⛔':>2}"
+            elif item['quantity'] < CONFIG['low_stock_threshold']:
+                stock_display = f"{stock_display:<10}{'🟡':>2}"
+
             table.add_row(
                 str(item['id']),
                 item['item'],
                 item['barcode'] or "",
                 f"{item['price']:.2f}",
-                f"{item['quantity']:.2f}"
+                stock_display
             )
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -2790,6 +2914,43 @@ class POSApp(App):
 
     def add_item_to_cart(self, item: dict, quantity: float = 1.0) -> None:
         """Add item to shopping cart"""
+        # Check for low stock warning
+        remaining_stock = item['quantity'] - quantity
+
+        if remaining_stock < 0 and CONFIG["allow_oversell"]:
+            # Ask for confirmation with callback
+            self.push_screen(
+                ConfirmDialog(
+                    f"Količina ide u minus ({remaining_stock:.1f})!\n"
+                    f"Artikal: {item['item']}\n"
+                    f"Na stanju: {item['quantity']:.1f}\n"
+                    f"Traženo: {quantity:.1f}\n\n"
+                    f"Da li ste sigurni?",
+                    "UPOZORENJE - NEMA DOVOLJNO ZALIHA"
+                ),
+                lambda confirmed: self.handle_oversell_confirmation(confirmed, item, quantity)
+            )
+            return  # ← Stop here, callback will handle the rest
+        elif remaining_stock < 0 and not CONFIG["allow_oversell"]:
+            self.handle_oversell_confirmation(False, item, 999)
+            return
+
+        # Normal flow - no confirmation needed
+        self.actually_add_to_cart(item, quantity)
+
+    def handle_oversell_confirmation(self, confirmed: bool, item: dict, quantity: float) -> None:
+        """Handle the result of oversell confirmation"""
+        if confirmed:
+            # User said yes - add anyway
+            self.actually_add_to_cart(item, quantity)
+        else:
+            if quantity == 999:
+                self.notify("Nije dozvoljena prodaja u minusu!", severity="error")
+            # User said no - just notify and do nothing
+            self.notify("Dodavanje otkazano", severity="warning")
+    
+    def actually_add_to_cart(self, item: dict, quantity: float) -> None:
+        """Actually add item to cart (after any confirmations)"""
         # Check if item already in cart
         for cart_item in self.cart:
             if cart_item['id'] == item['id']:
@@ -2804,10 +2965,28 @@ class POSApp(App):
                 'quantity': quantity,
                 'vat_rate': item.get('vat_rate', 0.20)
             })
-
+        
         self.update_cart_display()
-        self.notify(f"Dodato: {quantity}x {item['item']}")
+        
+        # Check for low stock warning
+        remaining_stock = item['quantity'] - quantity
+        
+        if remaining_stock <= 0:
+            self.notify(
+                f"🟡  {item['item']}: NEMA NA STANJU! (Ostalo: {remaining_stock:.1f})",
+                severity="error",
+                timeout=5
+            )
+        elif remaining_stock < CONFIG["low_stock_threshold"]:
+            self.notify(
+                f"🟡  {item['item']}: Nisko stanje! (Ostalo: {remaining_stock:.1f} kom)",
+                severity="warning",
+                timeout=5
+            )
+        else:
+            self.notify(f"Dodato: {quantity}x {item['item']}")
 
+        
     def update_cart_display(self) -> None:
         """Refresh cart table and total"""
         cart_table = self.query_one("#cart-table", DataTable)
@@ -2911,7 +3090,7 @@ class POSApp(App):
             result = self.pos.sell_multiple_items(
                 items=self.cart,
                 payment_info=payment_info,
-                allow_oversell=False
+                allow_oversell=CONFIG["allow_oversell"]
             )
 
             if not result.success:
@@ -2948,6 +3127,9 @@ class POSApp(App):
         self.cart = []
         self.update_cart_display()
         self.load_inventory()
+
+        # Update low stock banner
+        self.update_low_stock_banner()
 
         # Focus search for next sale
         self.query_one("#search-input", Input).focus()
@@ -3016,6 +3198,344 @@ class POSApp(App):
             self.notify(f"Uklonjeno: {removed['item']}")
 
 
+class RefundsScreen(Screen):
+    """Screen for processing returns and refunds"""
+    
+    CSS = """
+        RefundsScreen {
+            background: $surface;
+        }
+        
+        #refunds-container {
+            height: 100%;
+            padding: 1;
+        }
+        
+        #search-section {
+            height: auto;
+            background: $panel;
+            padding: 1;
+            margin-bottom: 1;
+        }
+        
+        #search-row {
+            layout: horizontal;
+            height: auto;
+        }
+        
+        #sales-table {
+            height: 1fr;
+            border: solid $primary;
+            margin: 1 0;
+        }
+        
+        #controls {
+            dock: bottom;
+            height: auto;
+            layout: horizontal;
+            background: $panel;
+            padding: 1;
+        }
+    """ 
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("r", "process_refund", "Refund"),
+    ]
+    
+    def __init__(self, pos_service, refund_service, current_user):
+        super().__init__()
+        self.pos_service = pos_service
+        self.refund_service = refund_service
+        self.current_user = current_user
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="refunds-container"):
+            yield Label("↩️  POVRAĆAJ ROBE", classes="label")
+            
+            with Vertical(id="search-section"):
+                yield Label("Pretraga prodaja:")
+                with Horizontal(id="search-row"):
+                    yield Input(
+                        placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
+                        id="date-input"
+                    )
+                    yield Button("Pretraži", id="search-btn", variant="primary")
+            
+            yield Label("Nedavne prodaje:")
+            yield DataTable(id="sales-table")  # ← Make sure this ID matches!
+            
+            with Horizontal(id="controls"):
+                yield Button("Povraćaj \\[R]", id="refund-btn", variant="warning")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Setup and load today's sales"""
+        from datetime import datetime
+        
+        # Setup table
+        try:
+            table = self.query_one("#sales-table", DataTable)
+            table.add_columns("ID", "Artikal", "Količina", "Cena", "Ukupno", "Vreme")
+            table.cursor_type = "row"
+        except Exception as e:
+            self.notify(f"Error setting up table: {e}", severity="error")
+            return
+        
+        # Load today's sales
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = today
+        self.load_sales(today)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "search-btn":
+            self.search_sales()
+        elif event.button.id == "refund-btn":
+            self.action_process_refund()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "date-input":
+            event.stop()
+            self.search_sales()
+    
+    def search_sales(self) -> None:
+        """Search sales by date"""
+        date = self.query_one("#date-input", Input).value.strip()
+        if date:
+            self.load_sales(date)
+    
+    def load_sales(self, date: str) -> None:
+        """Load sales for given date"""
+        from datetime import datetime
+        
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        sales = self.pos_service.sales.get_sales_by_date(date)
+        
+        table = self.query_one("#sales-table", DataTable)
+        table.clear()
+        
+        if not sales:
+            self.notify(f"Nema prodaja za {date}", severity="information")
+            return
+        
+        for sale in sales:
+            table.add_row(
+                str(sale['id']),
+                sale['item'],
+                f"{sale['quantity']:.2f}",
+                f"{sale['item_price']:.2f}",
+                f"{sale['total']:.2f}",
+                sale['time']
+            )
+        
+        self.notify(f"Učitano {len(sales)} prodaja", severity="information")
+    
+    def action_process_refund(self) -> None:
+        """Process refund for selected sale"""
+        table = self.query_one("#sales-table", DataTable)
+        
+        if table.cursor_row is None:
+            self.notify("Izaberite prodaju!", severity="warning")
+            return
+        
+        row = table.get_row_at(table.cursor_row)
+        sale_id = int(row[0])
+        item_name = row[1]
+        quantity_sold = float(row[2])
+        price = float(row[3])
+        
+        # Open refund dialog
+        self.app.push_screen(
+            ProcessRefundScreen(
+                sale_id=sale_id,
+                item_name=item_name,
+                quantity_sold=quantity_sold,
+                price=price,
+                refund_service=self.refund_service,
+                user_id=self.current_user['id']
+            ),
+            self.handle_refund_processed
+        )
+    
+    def handle_refund_processed(self, result) -> None:
+        """Callback after refund is processed"""
+        if result:
+            # Reload sales
+            date = self.query_one("#date-input", Input).value.strip()
+            self.load_sales(date)
+    
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class ProcessRefundScreen(Screen):
+    """Screen for processing individual refund"""
+    
+    CSS = """
+    ProcessRefundScreen {
+        align: center middle;
+    }
+    
+    #refund-dialog {
+        width: 60;
+        height: auto;
+        border: thick $warning;
+        background: $surface;
+        padding: 2;
+    }
+    
+    #sale-info {
+        padding: 1;
+        background: $panel;
+        margin-bottom: 1;
+    }
+    
+    .input-label {
+        padding: 1 0 0 0;
+    }
+    
+    Input {
+        margin-bottom: 1;
+    }
+    
+    #refund-method {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+    
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+    
+    def __init__(
+        self, 
+        sale_id: int, 
+        item_name: str, 
+        quantity_sold: float,
+        price: float,
+        refund_service,
+        user_id: int
+    ):
+        super().__init__()
+        self.sale_id = sale_id
+        self.item_name = item_name
+        self.quantity_sold = quantity_sold
+        self.price = price
+        self.refund_service = refund_service
+        self.user_id = user_id
+        self.refund_method = "cash"
+    
+    def compose(self) -> ComposeResult:
+        total = self.price * self.quantity_sold
+        
+        with Vertical(id="refund-dialog"):
+            yield Label("↩️  POVRAĆAJ ARTIKLA", classes="label")
+            
+            yield Static(
+                f"Artikal: {self.item_name}\n"
+                f"Prodato: {self.quantity_sold:.2f} kom\n"
+                f"Cena: {self.price:.2f} RSD\n"
+                f"Ukupno: {total:.2f} RSD",
+                id="sale-info"
+            )
+            
+            yield Label("Količina za povraćaj:", classes="input-label")
+            yield Input(
+                placeholder="Količina...",
+                id="quantity-input",
+                type="number",
+                value=str(self.quantity_sold)  # Default to full refund
+            )
+            
+            yield Label("Razlog povraćaja:", classes="input-label")
+            yield Input(
+                placeholder="Opciono - razlog povraćaja...",
+                id="reason-input"
+            )
+            
+            yield Label("Način povraćaja:", classes="input-label")
+            with Horizontal(id="refund-method"):
+                yield Button("Gotovina", id="cash-btn", variant="primary")
+                yield Button("Kartica", id="card-btn", variant="default")
+            
+            with Horizontal(id="buttons"):
+                yield Button("Izvrši povraćaj", id="process-btn", variant="warning")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        self.query_one("#quantity-input", Input).focus()
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cash-btn":
+            self.refund_method = "cash"
+            event.button.variant = "primary"
+            self.query_one("#card-btn", Button).variant = "default"
+        
+        elif event.button.id == "card-btn":
+            self.refund_method = "card"
+            event.button.variant = "primary"
+            self.query_one("#cash-btn", Button).variant = "default"
+        
+        elif event.button.id == "process-btn":
+            self.process_refund()
+        
+        elif event.button.id == "cancel-btn":
+            self.dismiss(None)
+    
+    def process_refund(self) -> None:
+        """Process the refund"""
+        quantity_str = self.query_one("#quantity-input", Input).value.strip()
+        reason = self.query_one("#reason-input", Input).value.strip()
+        
+        if not quantity_str:
+            self.notify("Unesite količinu!", severity="error")
+            return
+        
+        try:
+            quantity = float(quantity_str)
+            
+            if quantity <= 0:
+                self.notify("Količina mora biti veća od 0!", severity="error")
+                return
+            
+            if quantity > self.quantity_sold:
+                self.notify(
+                    f"Ne možete vratiti više nego što je prodato ({self.quantity_sold:.2f})!",
+                    severity="error"
+                )
+                return
+            
+            # Process refund
+            success, message = self.refund_service.process_refund(
+                sale_id=self.sale_id,
+                item_name=self.item_name,
+                quantity=quantity,
+                refund_method=self.refund_method,
+                reason=reason,
+                user_id=self.user_id
+            )
+            
+            if success:
+                self.notify(f"✅ {message}", severity="success")
+                self.dismiss(True)
+            else:
+                self.notify(f"❌ {message}", severity="error")
+        
+        except ValueError:
+            self.notify("Unesite ispravnu količinu!", severity="error")
+
+
 class ConfirmDeleteScreen(Screen):
     """Screen for confirming user deletion"""
     CSS = """
@@ -3053,7 +3573,7 @@ class ConfirmDeleteScreen(Screen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="confirm-dialog"):
-            yield Label("⚠️  BRISANJE KORISNIKA", classes="label")
+            yield Label("🟡  BRISANJE KORISNIKA", classes="label")
             yield Static(f"Da li ste sigurni da želite da obrišete korisnika {self.username}?")
             with Horizontal(id="buttons"):
                 yield Button("Da \\[D]", id="confirm-btn", variant="success")

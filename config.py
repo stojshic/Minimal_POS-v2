@@ -17,3 +17,11 @@ VAT_RATES = {
     "reduced": 0.10,    # 10% reduced rate
     "zero": 0.00,       # 0% (books, some food items)
 }
+
+# POS System Configuration
+CONFIG = {
+    "low_stock_threshold": 10.0,  # Items below this trigger warnings
+    "allow_oversell": True,  # Allow selling items with negative stock
+    "show_low_stock_banner": False,  # Show persistent low stock banner
+    "auto_print_receipt": False,  # Automatically print to printer (not implemented yet)
+}
