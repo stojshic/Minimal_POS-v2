@@ -487,15 +487,20 @@ class DailyReportService:
         sales = self.sales.get_sales_by_date(date)
         payment_summary = self.payments.get_payment_summary_by_date(date)
 
-        if not sales:
+        # Get refunds for the day
+        from pos_db_layer import RefundRepository
+        refunds = RefundRepository(self.sales.db).get_refunds_by_date(date)
+
+        if not sales and not refunds:
             return {
                 'date': date,
                 'has_sales': False,
-                'message': 'Nema prodaje za ovaj datum'
+                'message': 'Nema prodaje niti povraćaja za ovaj datum'
             }
 
         # Calculate basic stats
-        total_revenue = sum(sale['total'] for sale in sales)
+        total_refunds = sum(r['refund_amount'] for r in refunds)
+        total_revenue = sum(sale['total'] for sale in sales) - total_refunds
         total_transactions = len(sales)
         total_items_sold = sum(sale['quantity'] for sale in sales)
 
@@ -555,12 +560,15 @@ class DailyReportService:
                 'total_transactions': total_transactions,
                 'total_items_sold': total_items_sold,
                 'avg_transaction': avg_transaction,
+                'total_refunds': total_refunds,
+                'refund_count': len(refunds)
             },
             'payments': payment_summary,
             'vat_breakdown': vat_summary,
             'top_items': top_items,
             'hourly_sales': sorted(hourly_sales.items()),
-            'sales_detail': sales
+            'sales_detail': sales,
+            'refunds': refunds
         }
 
     def generate_cash_reconciliation(self, date: str, actual_cash_in_drawer: float) -> dict:

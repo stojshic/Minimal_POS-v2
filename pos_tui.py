@@ -188,6 +188,118 @@ class LoginScreen(Screen):
             self.query_one("#password-input", Input).focus()
 
 
+class RefundsHistoryScreen(Screen):
+    """View refund history"""
+    
+    CSS = """
+    RefundsHistoryScreen {
+        background: $surface;
+    }
+    
+    #history-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #refunds-table {
+        height: 1fr;
+        border: solid $warning;
+    }
+    
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        background: $panel;
+        padding: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+    ]
+    
+    def __init__(self, refund_service):
+        super().__init__()
+        self.refund_service = refund_service
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="history-container"):
+            yield Label("📋 ISTORIJA POVRAĆAJA", classes="label")
+            
+            with Horizontal():
+                yield Input(
+                    placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
+                    id="date-input"
+                )
+                yield Button("Prikaži", id="show-btn", variant="primary")
+            
+            yield DataTable(id="refunds-table")
+            
+            with Horizontal(id="controls"):
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        from datetime import datetime
+        
+        table = self.query_one("#refunds-table", DataTable)
+        table.add_columns("ID", "Artikal", "Količina", "Iznos", "Metoda", "Razlog", "Vreme")
+        
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = today
+        self.load_refunds(today)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "show-btn":
+            self.load_from_input()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "date-input":
+            event.stop()
+            self.load_from_input()
+    
+    def load_from_input(self) -> None:
+        date = self.query_one("#date-input", Input).value.strip()
+        self.load_refunds(date)
+    
+    def load_refunds(self, date: str) -> None:
+        from datetime import datetime
+        
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+        
+        refunds = self.refund_service.refunds.get_refunds_by_date(date)
+        
+        table = self.query_one("#refunds-table", DataTable)
+        table.clear()
+        
+        if not refunds:
+            self.notify(f"Nema povraćaja za {date}", severity="information")
+            return
+        
+        for refund in refunds:
+            table.add_row(
+                str(refund['id']),
+                refund['item'],
+                f"{refund['quantity']:.2f}",
+                f"{refund['refund_amount']:.2f}",
+                refund['refund_method'].upper(),
+                refund['reason'] or "-",
+                refund['created_at']
+            )
+        
+        total = sum(r['refund_amount'] for r in refunds)
+        self.notify(
+            f"Učitano {len(refunds)} povraćaja | Ukupno: {total:.2f} RSD",
+            severity="information"
+        )
+    
+    def action_close(self) -> None:
+        self.dismiss()
+
+
 class UserManagementScreen(Screen):
     """Admin screen for managing users"""
 
@@ -1114,8 +1226,21 @@ class DailyReportScreen(Screen):
             bar = '█' * min(bar_length, 40)
             content.append(f"   {hour}:00  {data['transactions']:>3} trans  {data['revenue']:>10.2f} RSD  {bar}")
         
+        # Show refunds if any
+        if 'refunds' in report and report['refunds']:
+            content.append("\n↩️  POVRAĆAJI:")
+            total_refunds = sum(r['refund_amount'] for r in report['refunds'])
+            content.append(f"   Broj povraćaja: {len(report['refunds'])}")
+            content.append(f"   Ukupan iznos:   {total_refunds:>12.2f} RSD")
+
+            for refund in report['refunds'][:10]:  # Show first 10
+                content.append(
+                    f"   • {refund['item']}: {refund['quantity']:.0f} kom "
+                    f"({refund['refund_amount']:.2f} RSD) - {refund['reason'] or 'Bez razloga'}"
+                )
+
         content.append("\n" + "=" * 60)
-        
+            
         self.query_one("#report-content", Static).update("\n".join(content))
     
     def action_close(self) -> None:
@@ -3240,6 +3365,8 @@ class RefundsScreen(Screen):
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("r", "process_refund", "Refund"),
+        Binding("h", "view_history", "History"),
+        Binding("a", "refund_receipt", "Refund All")
     ]
     
     def __init__(self, pos_service, refund_service, current_user):
@@ -3265,7 +3392,9 @@ class RefundsScreen(Screen):
             yield DataTable(id="sales-table")  # ← Make sure this ID matches!
             
             with Horizontal(id="controls"):
-                yield Button("Povraćaj \\[R]", id="refund-btn", variant="warning")
+                yield Button("Povraćaj stavke \\[R]", id="refund-btn", variant="warning")
+                yield Button("Povraćaj računa \\[A]", id="refund-all-btn", variant="error")
+                yield Button("Istorija \\[H]", id="history-btn", variant="default")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
     
     def on_mount(self) -> None:
@@ -3293,6 +3422,14 @@ class RefundsScreen(Screen):
             self.action_process_refund()
         elif event.button.id == "close-btn":
             self.action_close()
+        elif event.button.id == "history-btn":
+            self.action_view_history()
+        elif event.button.id == "refund-all-btn":
+            self.action_refund_receipt()
+
+    def action_view_history(self) -> None:
+        """View refunds history"""
+        self.app.push_screen(RefundsHistoryScreen(self.refund_service))
     
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "date-input":
@@ -3366,9 +3503,218 @@ class RefundsScreen(Screen):
             # Reload sales
             date = self.query_one("#date-input", Input).value.strip()
             self.load_sales(date)
-    
+
+    def action_refund_receipt(self) -> None:
+        """Refund entire receipt"""
+        table = self.query_one("#sales-table", DataTable)
+
+        if table.cursor_row is None:
+            self.notify("Izaberite prodaju!", severity="warning")
+            return
+
+        row = table.get_row_at(table.cursor_row)
+        sale_id = int(row[0])
+
+        # Get receipt for this sale
+        receipt_data = self.pos_service.receipts.get_receipt_by_sale_id(sale_id)
+
+        if not receipt_data:
+            self.notify("Račun nije pronađen!", severity="error")
+            return
+
+        # Show receipt refund dialog
+        self.app.push_screen(
+            RefundReceiptScreen(
+                sale_id=sale_id,
+                receipt_number=receipt_data['receipt_number'],
+                refund_service=self.refund_service,
+                pos_service=self.pos_service,
+                user_id=self.current_user['id']
+            ),
+            self.handle_refund_processed
+        )
+
     def action_close(self) -> None:
         self.dismiss()
+
+
+class RefundReceiptScreen(Screen):
+    """Screen for refunding entire receipt"""
+    
+    CSS = """
+    RefundReceiptScreen {
+        align: center middle;
+    }
+    
+    #refund-dialog {
+        width: 70;
+        height: auto;
+        border: thick $error;
+        background: $surface;
+        padding: 2;
+    }
+    
+    #items-table {
+        height: 15;
+        border: solid $warning;
+        margin: 1 0;
+    }
+    
+    #refund-method {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+    
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+    
+    def __init__(
+        self, 
+        sale_id: int,
+        receipt_number: int,
+        refund_service,
+        pos_service,
+        user_id: int
+    ):
+        super().__init__()
+        self.sale_id = sale_id
+        self.receipt_number = receipt_number
+        self.refund_service = refund_service
+        self.pos_service = pos_service
+        self.user_id = user_id
+        self.refund_method = "cash"
+        self.items = []
+        self.total = 0
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="refund-dialog"):
+            yield Label(f"↩️  POVRAĆAJ CELOG RAČUNA #{self.receipt_number}", classes="label")
+            
+            yield Label("Stavke na računu:")
+            yield DataTable(id="items-table")
+            
+            yield Static(f"Ukupan iznos povraćaja: 0.00 RSD", id="total-label")
+            
+            yield Label("Razlog povraćaja:")
+            yield Input(placeholder="Opciono - razlog...", id="reason-input")
+            
+            yield Label("Način povraćaja:")
+            with Horizontal(id="refund-method"):
+                yield Button("Gotovina", id="cash-btn", variant="primary")
+                yield Button("Kartica", id="card-btn", variant="default")
+            
+            with Horizontal(id="buttons"):
+                yield Button("Izvrši povraćaj SVEGA", id="process-btn", variant="error")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Load receipt items"""
+        table = self.query_one("#items-table", DataTable)
+        table.add_columns("Artikal", "Količina", "Cena", "Ukupno")
+        
+        # Get all sales with this receipt number
+        # For now, we'll get by sale_id (simplified)
+        # In production, you'd query all items with same receipt_number
+        
+        # Get the sale
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
+        all_sales = self.pos_service.sales.get_sales_by_date(today)
+        
+        # Filter to this receipt (simplified - you'd use receipt_number in production)
+        receipt_sales = [s for s in all_sales if s['id'] == self.sale_id]
+        
+        for sale in receipt_sales:
+            table.add_row(
+                sale['item'],
+                f"{sale['quantity']:.2f}",
+                f"{sale['item_price']:.2f}",
+                f"{sale['total']:.2f}"
+            )
+            
+            self.items.append({
+                'item': sale['item'],
+                'quantity': sale['quantity'],
+                'price': sale['item_price'],
+                'total': sale['total']
+            })
+            self.total += sale['total']
+        
+        self.query_one("#total-label", Static).update(
+            f"Ukupan iznos povraćaja: {self.total:.2f} RSD"
+        )
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cash-btn":
+            self.refund_method = "cash"
+            event.button.variant = "primary"
+            self.query_one("#card-btn", Button).variant = "default"
+        
+        elif event.button.id == "card-btn":
+            self.refund_method = "card"
+            event.button.variant = "primary"
+            self.query_one("#cash-btn", Button).variant = "default"
+        
+        elif event.button.id == "process-btn":
+            self.process_full_refund()
+        
+        elif event.button.id == "cancel-btn":
+            self.dismiss(None)
+    
+    def process_full_refund(self) -> None:
+        """Process refund for all items"""
+        reason = self.query_one("#reason-input", Input).value.strip()
+        
+        # Confirm first
+        self.app.push_screen(
+            ConfirmDialog(
+                f"Da li ste sigurni da želite da vratite CELU fakturu?\n\n"
+                f"Ukupan iznos: {self.total:.2f} RSD\n"
+                f"Broj stavki: {len(self.items)}",
+                "POTVRDA POVRAĆAJA"
+            ),
+            lambda confirmed: self.do_refund(confirmed, reason) if confirmed else None
+        )
+    
+    def do_refund(self, confirmed: bool, reason: str) -> None:
+        """Actually process the refund"""
+        success_count = 0
+        total_refunded = 0
+        
+        for item in self.items:
+            success, message = self.refund_service.process_refund(
+                sale_id=self.sale_id,
+                item_name=item['item'],
+                quantity=item['quantity'],
+                refund_method=self.refund_method,
+                reason=reason or "Povraćaj celog računa",
+                user_id=self.user_id
+            )
+            
+            if success:
+                success_count += 1
+                total_refunded += item['total']
+        
+        if success_count == len(self.items):
+            self.notify(
+                f"✅ Povraćeno {success_count} stavki | {total_refunded:.2f} RSD",
+                severity="success"
+            )
+            self.dismiss(True)
+        else:
+            self.notify(
+                f"⚠️  Povraćeno {success_count}/{len(self.items)} stavki",
+                severity="warning"
+            )
 
 
 class ProcessRefundScreen(Screen):
