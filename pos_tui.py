@@ -1470,7 +1470,6 @@ class OtpremniceScreen(Screen):
 
     #otpremnice-list {
         height: 1fr;
-        margin-top: 1;
     }
 
     #items-table {
@@ -1488,12 +1487,10 @@ class OtpremniceScreen(Screen):
         margin-right: 1;
     }
 
-    #otpremnice-controls {
-        dock: bottom;
-        height: auto;
+    #right-controls {
         layout: horizontal;
-        background: $panel;
-        padding: 1;
+        height: auto;
+        margin-top: 1;
     }
 
     .label {
@@ -1519,13 +1516,16 @@ class OtpremniceScreen(Screen):
     Button {
         margin: 0 1;
     }
+
+    #main-action-btn {
+        min-width: 20;
+    }
     """
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("f2", "close", "Main", show=True),
-        Binding("n", "new_otpremnica", "Nova"),
-        Binding("a", "add_item", "Dodaj stavku"),
+        Binding("n", "main_action", "Nova/Dodaj"),
         Binding("d", "remove_item", "Ukloni"),
         Binding("s", "save_otpremnica", "Sačuvaj"),
     ]
@@ -1545,7 +1545,6 @@ class OtpremniceScreen(Screen):
             with Horizontal(id="main-panels"):
                 # Left panel - List of previous otpremnice
                 with Vertical(id="left-panel"):
-                    yield Button("+ Nova otpremnica \\[N]", id="new-btn", variant="success")
                     yield Label("Prethodne otpremnice:", classes="section-label")
                     yield DataTable(id="otpremnice-list", zebra_stripes=True)
 
@@ -1558,15 +1557,15 @@ class OtpremniceScreen(Screen):
                             id="invoice-number-input",
                             disabled=True
                         )
-                        yield Button("Dodaj stavku \\[A]", id="add-item-btn", variant="primary", disabled=True)
+                        yield Button("+ Nova otpremnica \\[N]", id="main-action-btn", variant="success")
                     yield DataTable(id="items-table", zebra_stripes=True)
                     yield Static("UKUPNO: 0.00 RSD", id="total-label")
 
-            with Horizontal(id="otpremnice-controls"):
-                yield Button("Sačuvaj \\[S]", id="save-btn", variant="success", disabled=True)
-                yield Button("Ukloni stavku \\[D]", id="remove-item-btn", variant="error", disabled=True)
-                yield Button("Otkaži", id="cancel-btn", variant="warning", disabled=True)
-                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+                    with Horizontal(id="right-controls"):
+                        yield Button("Sačuvaj \\[S]", id="save-btn", variant="success", disabled=True)
+                        yield Button("Ukloni stavku \\[D]", id="remove-item-btn", variant="error", disabled=True)
+                        yield Button("Otkaži", id="cancel-btn", variant="warning", disabled=True)
+                        yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1644,10 +1643,8 @@ class OtpremniceScreen(Screen):
         label.update(f"UKUPNO: {total:.2f} RSD")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "new-btn":
-            self.action_new_otpremnica()
-        elif event.button.id == "add-item-btn":
-            self.action_add_item()
+        if event.button.id == "main-action-btn":
+            self.action_main_action()
         elif event.button.id == "remove-item-btn":
             self.action_remove_item()
         elif event.button.id == "save-btn":
@@ -1657,17 +1654,30 @@ class OtpremniceScreen(Screen):
         elif event.button.id == "close-btn":
             self.action_close()
 
-    def action_new_otpremnica(self) -> None:
+    def action_main_action(self) -> None:
+        """Handle main action button - either start new or add item"""
+        if not self.editing_mode:
+            # Start new otpremnica
+            self.start_new_otpremnica()
+        else:
+            # Add item to current otpremnica
+            self.add_item()
+
+    def start_new_otpremnica(self) -> None:
         """Start creating new otpremnica"""
         self.editing_mode = True
         self.invoice_items = []
         self.selected_otpremnica_id = None
 
+        # Change button to "Dodaj stavku" mode
+        main_btn = self.query_one("#main-action-btn", Button)
+        main_btn.label = "Dodaj stavku \\[N]"
+        main_btn.variant = "primary"
+
         # Enable editing controls
         self.query_one("#invoice-number-input", Input).disabled = False
         self.query_one("#invoice-number-input", Input).value = ""
         self.query_one("#invoice-number-input", Input).focus()
-        self.query_one("#add-item-btn", Button).disabled = False
         self.query_one("#save-btn", Button).disabled = False
         self.query_one("#remove-item-btn", Button).disabled = False
         self.query_one("#cancel-btn", Button).disabled = False
@@ -1679,15 +1689,26 @@ class OtpremniceScreen(Screen):
 
         self.notify("Nova otpremnica - unesite broj i dodajte stavke", severity="information")
 
+    def add_item(self) -> None:
+        """Add item to new otpremnica"""
+        self.app.push_screen(
+            AddInvoiceItemScreen(self.pos_service),
+            self.handle_item_added
+        )
+
     def action_cancel_edit(self) -> None:
         """Cancel creating new otpremnica"""
         self.editing_mode = False
         self.invoice_items = []
 
+        # Change button back to "Nova otpremnica" mode
+        main_btn = self.query_one("#main-action-btn", Button)
+        main_btn.label = "+ Nova otpremnica \\[N]"
+        main_btn.variant = "success"
+
         # Disable editing controls
         self.query_one("#invoice-number-input", Input).disabled = True
         self.query_one("#invoice-number-input", Input).value = ""
-        self.query_one("#add-item-btn", Button).disabled = True
         self.query_one("#save-btn", Button).disabled = True
         self.query_one("#remove-item-btn", Button).disabled = True
         self.query_one("#cancel-btn", Button).disabled = True
@@ -1698,17 +1719,6 @@ class OtpremniceScreen(Screen):
         self.update_total_label(0)
 
         self.notify("Otkazano", severity="warning")
-
-    def action_add_item(self) -> None:
-        """Add item to new otpremnica"""
-        if not self.editing_mode:
-            self.notify("Prvo kliknite 'Nova otpremnica'", severity="warning")
-            return
-
-        self.app.push_screen(
-            AddInvoiceItemScreen(self.pos_service),
-            self.handle_item_added
-        )
 
     def action_remove_item(self) -> None:
         """Remove selected item from new otpremnica"""
@@ -1758,9 +1768,13 @@ class OtpremniceScreen(Screen):
             self.notify(f"✅ {message}", severity="success")
             self.editing_mode = False
 
+            # Change button back to "Nova otpremnica" mode
+            main_btn = self.query_one("#main-action-btn", Button)
+            main_btn.label = "+ Nova otpremnica \\[N]"
+            main_btn.variant = "success"
+
             # Disable editing controls
             self.query_one("#invoice-number-input", Input).disabled = True
-            self.query_one("#add-item-btn", Button).disabled = True
             self.query_one("#save-btn", Button).disabled = True
             self.query_one("#remove-item-btn", Button).disabled = True
             self.query_one("#cancel-btn", Button).disabled = True
