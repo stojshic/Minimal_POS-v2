@@ -22,11 +22,11 @@
 - [x] Implement monthly report generation logic
 - [x] Restrict these buttons to Admin users only (already implemented - buttons only show for is_admin=True)
 
-## Logout Security Fix
-- [ ] Fix: Admin logs out on restricted screen (e.g., Users), cashier logs in and sees that screen
-- [ ] Modify logout method to close/pop all screens
-- [ ] Ensure Sales screen (F7 Prodaja) is shown after any user logs in
-- [ ] Test with different user roles
+## Logout Security Fix ✅ DONE
+- [x] Fix: Admin logs out on restricted screen (e.g., Users), cashier logs in and sees that screen
+- [x] Modify logout method to close/pop all screens
+- [x] Ensure Sales screen (F2 Prodaja) is shown after any user logs in
+- [x] Test with different user roles
 
 ## Time Zone Bug
 - [ ] Investigate -1 hour time offset on sales

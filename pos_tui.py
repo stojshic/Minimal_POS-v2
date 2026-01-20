@@ -4278,7 +4278,22 @@ class POSApp(App):
         """F9 - Logout current user"""
         # Clear cart before logout for security
         self.cart = []
+        self.cart_total = 0.0
+
+        # Clear current user
+        self.current_user = None
+
+        # Pop all screens back to base to prevent restricted screens from remaining
+        # This fixes the bug where admin logs out on Users screen and cashier still sees it
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+
+        # Reset cart display
         self.update_cart_display()
+
+        # Clear user info bar
+        user_info = self.query_one("#user-info", Static)
+        user_info.update("")
 
         # Show login screen again
         self.push_screen(LoginScreen(self.user_service), self.handle_login)
