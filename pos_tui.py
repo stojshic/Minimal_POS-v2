@@ -1863,13 +1863,21 @@ class ReportsScreen(Screen):
         elif event.button.id == "stock-btn":
             self.action_low_stock()
         elif event.button.id == "weekly-btn" and self.is_admin:
-            self.notify("Nedeljni izveštaj - u izradi", severity="information")
+            self.action_weekly_report()
         elif event.button.id == "monthly-btn" and self.is_admin:
-            self.notify("Mesečni izveštaj - u izradi", severity="information")
+            self.action_monthly_report()
         elif event.button.id == "top-btn" and self.is_admin:
             self.show_top_items()
         elif event.button.id == "close-btn":
             self.action_close()
+
+    def action_weekly_report(self) -> None:
+        """Show weekly report"""
+        self.app.push_screen(WeeklyReportScreen(self.daily_reports))
+
+    def action_monthly_report(self) -> None:
+        """Show monthly report"""
+        self.app.push_screen(MonthlyReportScreen(self.daily_reports))
     
     def action_daily_report(self) -> None:
         """Show daily report"""
@@ -2049,6 +2057,399 @@ class DailyReportScreen(Screen):
 
         self.query_one("#report-content", Static).update("\n".join(content))
     
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class WeeklyReportScreen(Screen):
+    """Display weekly sales report"""
+
+    CSS = """
+    WeeklyReportScreen {
+        align: center middle;
+    }
+
+    #weekly-dialog {
+        width: 80;
+        height: auto;
+        max-height: 90%;
+        border: thick $accent;
+        background: $surface;
+        padding: 2;
+    }
+
+    #report-content {
+        height: 1fr;
+        min-height: 20;
+        border: solid $primary;
+        padding: 2;
+        overflow-y: scroll;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    #week-selector {
+        layout: horizontal;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #week-selector Input {
+        width: 1fr;
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
+    ]
+
+    def __init__(self, daily_reports):
+        super().__init__()
+        self.daily_reports = daily_reports
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="weekly-dialog"):
+            yield Label("📊 NEDELJNI IZVEŠTAJ", classes="label")
+
+            with Horizontal(id="week-selector"):
+                yield Input(placeholder="Godina (YYYY)", id="year-input", type="integer")
+                yield Input(placeholder="Nedelja (1-53)", id="week-input", type="integer")
+                yield Button("Prikaži", id="show-btn", variant="primary")
+
+            yield Static("", id="report-content")
+
+            with Horizontal(id="controls"):
+                yield Button("Prethodna nedelja", id="prev-btn", variant="default")
+                yield Button("Sledeća nedelja", id="next-btn", variant="default")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="error")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Load current week's report by default"""
+        from datetime import datetime
+        today = datetime.now()
+        year, week, _ = today.isocalendar()
+
+        self.query_one("#year-input", Input).value = str(year)
+        self.query_one("#week-input", Input).value = str(week)
+        self.load_report(year, week)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "show-btn":
+            self.show_current_selection()
+        elif event.button.id == "prev-btn":
+            self.navigate_week(-1)
+        elif event.button.id == "next-btn":
+            self.navigate_week(1)
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.show_current_selection()
+
+    def show_current_selection(self) -> None:
+        try:
+            year = int(self.query_one("#year-input", Input).value)
+            week = int(self.query_one("#week-input", Input).value)
+            if 1 <= week <= 53:
+                self.load_report(year, week)
+            else:
+                self.notify("Nedelja mora biti između 1 i 53", severity="error")
+        except ValueError:
+            self.notify("Unesite validnu godinu i nedelju", severity="error")
+
+    def navigate_week(self, delta: int) -> None:
+        try:
+            year = int(self.query_one("#year-input", Input).value)
+            week = int(self.query_one("#week-input", Input).value)
+
+            week += delta
+            if week < 1:
+                year -= 1
+                week = 52
+            elif week > 52:
+                year += 1
+                week = 1
+
+            self.query_one("#year-input", Input).value = str(year)
+            self.query_one("#week-input", Input).value = str(week)
+            self.load_report(year, week)
+        except ValueError:
+            pass
+
+    def load_report(self, year: int, week: int) -> None:
+        """Load and display weekly report"""
+        report = self.daily_reports.generate_weekly_report(year, week)
+
+        if not report['has_sales']:
+            self.query_one("#report-content", Static).update(
+                f"\n{report.get('message', 'Nema podataka')}"
+            )
+            return
+
+        L = CONFIG['left_side']
+        M = CONFIG['middle_side']
+        R = CONFIG['right_side']
+        W = L + M + R
+
+        content = []
+        content.append("=" * W)
+        content.append(f"NEDELJNI IZVEŠTAJ: {report['period']}".center(W))
+        content.append(f"({report['start_date']} - {report['end_date']})".center(W))
+        content.append("=" * W)
+
+        summary = report['summary']
+        content.append(f"\n{'OSNOVNI PODACI:':^{W}}")
+        content.append("─" * W)
+        content.append(f"{'Ukupan promet:':<{L+M}}{summary['total_revenue']:>{R}.2f} RSD")
+        content.append(f"{'Broj transakcija:':<{L+M}}{summary['total_transactions']:>{R}}")
+        content.append(f"{'Prodato artikala:':<{L+M}}{summary['total_items_sold']:>{R}.0f}")
+        content.append(f"{'Prosečna transakcija:':<{L+M}}{summary['avg_transaction']:>{R}.2f} RSD")
+        content.append(f"{'Prosečan dnevni promet:':<{L+M}}{summary['avg_daily_revenue']:>{R}.2f} RSD")
+        content.append(f"{'Dana sa prodajom:':<{L+M}}{summary['days_with_sales']:>{R}}")
+
+        if summary['refund_count'] > 0:
+            content.append(f"{'Povraćaji:':<{L+M}}{summary['total_refunds']:>{R}.2f} RSD ({summary['refund_count']})")
+
+        # Payment breakdown
+        payments = report['payments']
+        content.append(f"\n{'NAČIN PLAĆANJA:':^{W}}")
+        content.append("─" * W)
+        content.append(f"{'Gotovina:':<{L+M}}{payments['cash']:>{R}.2f} RSD")
+        content.append(f"{'Kartica:':<{L+M}}{payments['card']:>{R}.2f} RSD")
+
+        # Daily breakdown
+        if report['daily_totals']:
+            content.append(f"\n{'DNEVNI PREGLED:':^{W}}")
+            content.append("─" * W)
+            for day in report['daily_totals']:
+                date_str = day['date']
+                content.append(f"{date_str:<{L}}{day['transaction_count']:>{M}} tr.{day['total_revenue']:>{R}.2f} RSD")
+
+        # Top items
+        if report['top_items']:
+            content.append(f"\n{'TOP 10 ARTIKALA:':^{W}}")
+            content.append("─" * W)
+            for i, (item_name, data) in enumerate(report['top_items'], 1):
+                name = item_name[:L-3] if len(item_name) > L-3 else item_name
+                content.append(f"{i}. {name:<{L-3}}{data['quantity']:>{M}.0f}{data['revenue']:>{R}.2f}")
+
+        # VAT breakdown
+        if report['vat_breakdown']:
+            content.append(f"\n{'PDV PREGLED:':^{W}}")
+            content.append("─" * W)
+            for rate, data in report['vat_breakdown'].items():
+                rate_pct = int(rate * 100)
+                content.append(f"PDV {rate_pct}%: Osnovica {data['base']:.2f}, PDV {data['vat']:.2f}, Ukupno {data['total']:.2f}")
+
+        content.append("\n" + "=" * W)
+
+        self.query_one("#report-content", Static).update("\n".join(content))
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class MonthlyReportScreen(Screen):
+    """Display monthly sales report"""
+
+    CSS = """
+    MonthlyReportScreen {
+        align: center middle;
+    }
+
+    #monthly-dialog {
+        width: 80;
+        height: auto;
+        max-height: 90%;
+        border: thick $accent;
+        background: $surface;
+        padding: 2;
+    }
+
+    #report-content {
+        height: 1fr;
+        min-height: 20;
+        border: solid $primary;
+        padding: 2;
+        overflow-y: scroll;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    #month-selector {
+        layout: horizontal;
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #month-selector Input {
+        width: 1fr;
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
+    ]
+
+    def __init__(self, daily_reports):
+        super().__init__()
+        self.daily_reports = daily_reports
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="monthly-dialog"):
+            yield Label("📊 MESEČNI IZVEŠTAJ", classes="label")
+
+            with Horizontal(id="month-selector"):
+                yield Input(placeholder="Godina (YYYY)", id="year-input", type="integer")
+                yield Input(placeholder="Mesec (1-12)", id="month-input", type="integer")
+                yield Button("Prikaži", id="show-btn", variant="primary")
+
+            yield Static("", id="report-content")
+
+            with Horizontal(id="controls"):
+                yield Button("Prethodni mesec", id="prev-btn", variant="default")
+                yield Button("Sledeći mesec", id="next-btn", variant="default")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="error")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Load current month's report by default"""
+        from datetime import datetime
+        today = datetime.now()
+
+        self.query_one("#year-input", Input).value = str(today.year)
+        self.query_one("#month-input", Input).value = str(today.month)
+        self.load_report(today.year, today.month)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "show-btn":
+            self.show_current_selection()
+        elif event.button.id == "prev-btn":
+            self.navigate_month(-1)
+        elif event.button.id == "next-btn":
+            self.navigate_month(1)
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.show_current_selection()
+
+    def show_current_selection(self) -> None:
+        try:
+            year = int(self.query_one("#year-input", Input).value)
+            month = int(self.query_one("#month-input", Input).value)
+            if 1 <= month <= 12:
+                self.load_report(year, month)
+            else:
+                self.notify("Mesec mora biti između 1 i 12", severity="error")
+        except ValueError:
+            self.notify("Unesite validnu godinu i mesec", severity="error")
+
+    def navigate_month(self, delta: int) -> None:
+        try:
+            year = int(self.query_one("#year-input", Input).value)
+            month = int(self.query_one("#month-input", Input).value)
+
+            month += delta
+            if month < 1:
+                year -= 1
+                month = 12
+            elif month > 12:
+                year += 1
+                month = 1
+
+            self.query_one("#year-input", Input).value = str(year)
+            self.query_one("#month-input", Input).value = str(month)
+            self.load_report(year, month)
+        except ValueError:
+            pass
+
+    def load_report(self, year: int, month: int) -> None:
+        """Load and display monthly report"""
+        report = self.daily_reports.generate_monthly_report(year, month)
+
+        if not report['has_sales']:
+            self.query_one("#report-content", Static).update(
+                f"\n{report.get('message', 'Nema podataka')}"
+            )
+            return
+
+        L = CONFIG['left_side']
+        M = CONFIG['middle_side']
+        R = CONFIG['right_side']
+        W = L + M + R
+
+        content = []
+        content.append("=" * W)
+        content.append(f"MESEČNI IZVEŠTAJ: {report['period']}".center(W))
+        content.append(f"({report['start_date']} - {report['end_date']})".center(W))
+        content.append("=" * W)
+
+        summary = report['summary']
+        content.append(f"\n{'OSNOVNI PODACI:':^{W}}")
+        content.append("─" * W)
+        content.append(f"{'Ukupan promet:':<{L+M}}{summary['total_revenue']:>{R}.2f} RSD")
+        content.append(f"{'Broj transakcija:':<{L+M}}{summary['total_transactions']:>{R}}")
+        content.append(f"{'Prodato artikala:':<{L+M}}{summary['total_items_sold']:>{R}.0f}")
+        content.append(f"{'Prosečna transakcija:':<{L+M}}{summary['avg_transaction']:>{R}.2f} RSD")
+        content.append(f"{'Prosečan dnevni promet:':<{L+M}}{summary['avg_daily_revenue']:>{R}.2f} RSD")
+        content.append(f"{'Dana sa prodajom:':<{L+M}}{summary['days_with_sales']:>{R}}")
+
+        if summary['refund_count'] > 0:
+            content.append(f"{'Povraćaji:':<{L+M}}{summary['total_refunds']:>{R}.2f} RSD ({summary['refund_count']})")
+
+        # Payment breakdown
+        payments = report['payments']
+        content.append(f"\n{'NAČIN PLAĆANJA:':^{W}}")
+        content.append("─" * W)
+        content.append(f"{'Gotovina:':<{L+M}}{payments['cash']:>{R}.2f} RSD")
+        content.append(f"{'Kartica:':<{L+M}}{payments['card']:>{R}.2f} RSD")
+
+        # Daily breakdown (abbreviated for monthly)
+        if report['daily_totals']:
+            content.append(f"\n{'DNEVNI PREGLED:':^{W}}")
+            content.append("─" * W)
+            for day in report['daily_totals']:
+                date_str = day['date']
+                content.append(f"{date_str:<{L}}{day['transaction_count']:>{M}} tr.{day['total_revenue']:>{R}.2f} RSD")
+
+        # Top items
+        if report['top_items']:
+            content.append(f"\n{'TOP 10 ARTIKALA:':^{W}}")
+            content.append("─" * W)
+            for i, (item_name, data) in enumerate(report['top_items'], 1):
+                name = item_name[:L-3] if len(item_name) > L-3 else item_name
+                content.append(f"{i}. {name:<{L-3}}{data['quantity']:>{M}.0f}{data['revenue']:>{R}.2f}")
+
+        # VAT breakdown
+        if report['vat_breakdown']:
+            content.append(f"\n{'PDV PREGLED:':^{W}}")
+            content.append("─" * W)
+            for rate, data in report['vat_breakdown'].items():
+                rate_pct = int(rate * 100)
+                content.append(f"PDV {rate_pct}%: Osnovica {data['base']:.2f}, PDV {data['vat']:.2f}, Ukupno {data['total']:.2f}")
+
+        content.append("\n" + "=" * W)
+
+        self.query_one("#report-content", Static).update("\n".join(content))
+
     def action_close(self) -> None:
         self.dismiss()
 

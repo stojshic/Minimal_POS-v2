@@ -15,12 +15,12 @@
   - [x] Input field enabled when "Nova otpremnica" is clicked
   - [x] "Dodaj stavku" button adds items to right datatable (existing functionality)
 
-## F4 Reports - Weekly and Monthly Reports
-- [ ] Add "Nedeljni izvestaj" (weekly report) button
-- [ ] Add "Mesecni izvestaj" (monthly report) button
-- [ ] Implement weekly report generation logic
-- [ ] Implement monthly report generation logic
-- [ ] Restrict these buttons to Admin users only (hide or disable for cashiers)
+## F4 Reports - Weekly and Monthly Reports ✅ DONE
+- [x] Add "Nedeljni izvestaj" (weekly report) button
+- [x] Add "Mesecni izvestaj" (monthly report) button
+- [x] Implement weekly report generation logic
+- [x] Implement monthly report generation logic
+- [x] Restrict these buttons to Admin users only (already implemented - buttons only show for is_admin=True)
 
 ## Logout Security Fix
 - [ ] Fix: Admin logs out on restricted screen (e.g., Users), cashier logs in and sees that screen

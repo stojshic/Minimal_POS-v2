@@ -1175,6 +1175,102 @@ class UnifiedSalesRepository:
 
             return summary
 
+    def get_sales_with_items_between_dates(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        Get all sales between two dates (inclusive) with their items
+
+        Args:
+            start_date: Start date 'YYYY-MM-DD'
+            end_date: End date 'YYYY-MM-DD'
+
+        Returns:
+            List of dicts, each with 'sale' and 'items' keys
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cursor.execute(
+                """SELECT * FROM sales
+                   WHERE DATE(created_at) BETWEEN ? AND ?
+                   ORDER BY created_at""",
+                (start_date, end_date)
+            )
+            sales = [dict(row) for row in cursor.fetchall()]
+
+            results = []
+            for sale in sales:
+                cursor.execute(
+                    """SELECT * FROM sold_items
+                       WHERE sale_id = ?
+                       ORDER BY id""",
+                    (sale['id'],)
+                )
+                items = [dict(row) for row in cursor.fetchall()]
+                results.append({
+                    'sale': sale,
+                    'items': items
+                })
+
+            return results
+
+    def get_payment_summary_between_dates(self, start_date: str, end_date: str) -> Dict[str, float]:
+        """
+        Get payment totals by type between two dates (inclusive)
+
+        Args:
+            start_date: Start date 'YYYY-MM-DD'
+            end_date: End date 'YYYY-MM-DD'
+
+        Returns:
+            Dict with 'cash', 'card' and 'total' amounts
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT
+                        SUM(cash_amount) as cash_total,
+                        SUM(card_amount) as card_total,
+                        SUM(total_amount) as total
+                   FROM sales
+                   WHERE DATE(created_at) BETWEEN ? AND ?""",
+                (start_date, end_date)
+            )
+
+            row = cursor.fetchone()
+            return {
+                'cash': row['cash_total'] or 0.0,
+                'card': row['card_total'] or 0.0,
+                'total': row['total'] or 0.0
+            }
+
+    def get_daily_totals_between_dates(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
+        """
+        Get daily totals between two dates for charting/comparison
+
+        Args:
+            start_date: Start date 'YYYY-MM-DD'
+            end_date: End date 'YYYY-MM-DD'
+
+        Returns:
+            List of dicts with date, transaction_count, and total_revenue
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT
+                        DATE(created_at) as date,
+                        COUNT(*) as transaction_count,
+                        SUM(total_amount) as total_revenue,
+                        SUM(cash_amount) as cash_total,
+                        SUM(card_amount) as card_total
+                   FROM sales
+                   WHERE DATE(created_at) BETWEEN ? AND ?
+                   GROUP BY DATE(created_at)
+                   ORDER BY date""",
+                (start_date, end_date)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_sale_by_receipt_number(self, receipt_number: int) -> Optional[Dict[str, Any]]:
         """
         Get sale by receipt number (replaces ReceiptRepository.get_receipt_by_number)

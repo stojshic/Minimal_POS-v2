@@ -710,6 +710,176 @@ class DailyReportService:
             'is_balanced': abs(difference) < 0.01  # Within 1 dinar
         }
 
+    def generate_weekly_report(self, year: int, week: int) -> dict:
+        """
+        Generate weekly report for a given ISO week number
+
+        Args:
+            year: Year (e.g., 2026)
+            week: ISO week number (1-53)
+
+        Returns:
+            Dict containing weekly report data
+        """
+        from datetime import datetime, timedelta
+
+        # Calculate start and end dates for the ISO week
+        jan4 = datetime(year, 1, 4)
+        start_of_week1 = jan4 - timedelta(days=jan4.isoweekday() - 1)
+        start_date = start_of_week1 + timedelta(weeks=week - 1)
+        end_date = start_date + timedelta(days=6)
+
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+
+        return self._generate_period_report(start_str, end_str, f"Nedelja {week}, {year}")
+
+    def generate_monthly_report(self, year: int, month: int) -> dict:
+        """
+        Generate monthly report
+
+        Args:
+            year: Year (e.g., 2026)
+            month: Month (1-12)
+
+        Returns:
+            Dict containing monthly report data
+        """
+        from datetime import datetime
+        import calendar
+
+        start_date = datetime(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        end_date = datetime(year, month, last_day)
+
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+
+        month_names = [
+            "", "Januar", "Februar", "Mart", "April", "Maj", "Jun",
+            "Jul", "Avgust", "Septembar", "Oktobar", "Novembar", "Decembar"
+        ]
+        period_name = f"{month_names[month]} {year}"
+
+        return self._generate_period_report(start_str, end_str, period_name)
+
+    def _generate_period_report(self, start_date: str, end_date: str, period_name: str) -> dict:
+        """
+        Generate report for a date range
+
+        Args:
+            start_date: Start date 'YYYY-MM-DD'
+            end_date: End date 'YYYY-MM-DD'
+            period_name: Human-readable period name
+
+        Returns:
+            Dict containing period report data
+        """
+        if not self.unified_sales:
+            return {
+                'period': period_name,
+                'has_sales': False,
+                'message': 'Nedeljni/mesečni izveštaji zahtevaju novu strukturu baze'
+            }
+
+        from pos_db_layer import RefundRepository
+
+        sales_data = self.unified_sales.get_sales_with_items_between_dates(start_date, end_date)
+        payment_summary = self.unified_sales.get_payment_summary_between_dates(start_date, end_date)
+        daily_totals = self.unified_sales.get_daily_totals_between_dates(start_date, end_date)
+
+        # Get refunds for the period
+        refunds = []
+        try:
+            refund_repo = RefundRepository(self.unified_sales.db)
+            # We need to get refunds for each day in the range
+            from datetime import datetime, timedelta
+            current = datetime.strptime(start_date, "%Y-%m-%d")
+            end = datetime.strptime(end_date, "%Y-%m-%d")
+            while current <= end:
+                day_refunds = refund_repo.get_refunds_by_date(current.strftime("%Y-%m-%d"))
+                refunds.extend(day_refunds)
+                current += timedelta(days=1)
+        except Exception:
+            pass
+
+        if not sales_data and not refunds:
+            return {
+                'period': period_name,
+                'start_date': start_date,
+                'end_date': end_date,
+                'has_sales': False,
+                'message': f'Nema prodaje za period {period_name}'
+            }
+
+        # Calculate basic stats
+        total_refunds = sum(r['refund_amount'] for r in refunds)
+        total_revenue = sum(s['sale']['total_amount'] for s in sales_data) - total_refunds
+        total_transactions = len(sales_data)
+        total_items_sold = sum(
+            sum(item['quantity'] for item in s['items'])
+            for s in sales_data
+        )
+
+        # Calculate VAT breakdown
+        vat_summary = {}
+        for sale_data in sales_data:
+            for item in sale_data['items']:
+                vat_rate = item.get('vat_rate', 0.20)
+                if vat_rate not in vat_summary:
+                    vat_summary[vat_rate] = {'base': 0, 'vat': 0, 'total': 0}
+
+                item_total = item['total']
+                base = item_total / (1 + vat_rate)
+                vat = item_total - base
+
+                vat_summary[vat_rate]['base'] += base
+                vat_summary[vat_rate]['vat'] += vat
+                vat_summary[vat_rate]['total'] += item_total
+
+        # Top selling items
+        item_sales = {}
+        for sale_data in sales_data:
+            for item in sale_data['items']:
+                item_name = item['item']
+                if item_name not in item_sales:
+                    item_sales[item_name] = {'quantity': 0, 'revenue': 0}
+
+                item_sales[item_name]['quantity'] += item['quantity']
+                item_sales[item_name]['revenue'] += item['total']
+
+        top_items = sorted(
+            item_sales.items(),
+            key=lambda x: x[1]['revenue'],
+            reverse=True
+        )[:10]
+
+        avg_transaction = total_revenue / total_transactions if total_transactions > 0 else 0
+        days_with_sales = len(daily_totals)
+        avg_daily_revenue = total_revenue / days_with_sales if days_with_sales > 0 else 0
+
+        return {
+            'period': period_name,
+            'start_date': start_date,
+            'end_date': end_date,
+            'has_sales': True,
+            'summary': {
+                'total_revenue': total_revenue,
+                'total_transactions': total_transactions,
+                'total_items_sold': total_items_sold,
+                'avg_transaction': avg_transaction,
+                'avg_daily_revenue': avg_daily_revenue,
+                'days_with_sales': days_with_sales,
+                'total_refunds': total_refunds,
+                'refund_count': len(refunds)
+            },
+            'payments': payment_summary,
+            'vat_breakdown': vat_summary,
+            'top_items': top_items,
+            'daily_totals': daily_totals,
+            'refunds': refunds
+        }
+
 
 class UserService:
     """Service for user management and authentication"""
