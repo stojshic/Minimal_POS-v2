@@ -11,15 +11,18 @@ from textual.screen import Screen
 from time import time
 from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
-    InvoiceRepository, PaymentRepository, ReceiptRepository,
-    UserRepository, RefundRepository, CustomerRepository,
-    UnifiedSalesRepository
+    InvoiceRepository, UserRepository, RefundRepository,
+    CustomerRepository, UnifiedSalesRepository
 )
 from pos_business_logic import (
         POSService, ReportService, PaymentInfo, DailyReportService, 
         UserService, RefundService
 )
 from config import STORE_CONFIG, CONFIG
+
+
+USER = ""
+
 
 class ConfirmDialog(Screen):
     """Generic confirmation dialog"""
@@ -224,32 +227,34 @@ class CustomerManagementScreen(Screen):
     
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
         Binding("n", "new_customer", "New Customer"),
         Binding("e", "edit_customer", "Edit Customer"),
         Binding("d", "delete_customer", "Delete"),
         Binding("i", "create_invoice", "Create Invoice"),
     ]
-    
+
     def __init__(self, customer_repo):
         super().__init__()
         self.customer_repo = customer_repo
-    
+
     def compose(self) -> ComposeResult:
         with Vertical(id="customer-container"):
             yield Label("👥 UPRAVLJANJE KUPCIMA", classes="label")
-            
+
             with Horizontal(id="search-section"):
                 yield Input(placeholder="Pretraga kupaca...", id="search-input")
-            
+
             yield DataTable(id="customers-table")
-            
+
             with Horizontal(id="controls"):
                 yield Button("Novi kupac \\[N]", id="new-btn", variant="success")
                 yield Button("Izmeni \\[E]", id="edit-btn", variant="primary")
                 yield Button("Kreiraj fakturu \\[I]", id="invoice-btn", variant="warning")
                 yield Button("Obriši \\[D]", id="delete-btn", variant="error")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-    
+        yield Footer()
+
     def on_mount(self) -> None:
         """Setup table and load customers"""
         table = self.query_one("#customers-table", DataTable)
@@ -911,6 +916,7 @@ class UserManagementScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
         Binding("n", "new_user", "New User"),
         Binding("p", "change_password", "Change Password"),
         Binding("d", "toggle_active", "Toggle Active"),
@@ -932,6 +938,7 @@ class UserManagementScreen(Screen):
                 yield Button("Aktiviraj/Deaktiviraj \\[D]", id="toggle-btn", variant="warning")
                 yield Button("Obriši \\[Del]", id="delete-btn", variant="error")
                 yield Button("Zatvori \\[Esc]", id="close-btn", variant="default")
+        yield Footer()
 
     def on_mount(self) -> None:
         """Setup table and load users"""
@@ -1086,6 +1093,7 @@ class InventoryManagementScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
         Binding("n", "new_item", "New Item"),
         Binding("e", "edit_item", "Edit Item"),
         Binding("delete", "delete_item", "Delete Item"),
@@ -1111,6 +1119,7 @@ class InventoryManagementScreen(Screen):
                 yield Button("Promeni cenu \\[P]", id="price-btn", variant="warning")
                 yield Button("Obriši \\[Del]", id="delete-item-btn", variant="error")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+        yield Footer()
 
     def on_mount(self) -> None:
         """Setup table and load inventory"""
@@ -1465,6 +1474,7 @@ class InvoiceManagementScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
         Binding("n", "add_item", "Add Item"),
         Binding("d", "remove_item", "Remove Item"),
         Binding("s", "save_invoice", "Save Invoice"),
@@ -1491,6 +1501,7 @@ class InvoiceManagementScreen(Screen):
                 yield Button("Ukloni \\[D]", id="remove-item-btn", variant="error")
                 yield Button("Sačuvaj fakturu \\[S]", id="save-btn", variant="primary")
                 yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+        yield Footer()
 
     def on_mount(self) -> None:
         """Setup table"""
@@ -1612,33 +1623,35 @@ class ReportsScreen(Screen):
     
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
         Binding("1", "daily_report", "Daily Report"),
         Binding("2", "cash_reconciliation", "Cash Count"),
         Binding("3", "low_stock", "Low Stock"),
     ]
-    
+
     def __init__(self, daily_reports, reports, is_admin: bool):
         super().__init__()
         self.daily_reports = daily_reports
         self.reports = reports
         self.is_admin = is_admin
-    
+
     def compose(self) -> ComposeResult:
         with Vertical(id="reports-dialog"):
             yield Label("📊 IZVEŠTAJI", classes="label")
-            
+
             # with Vertical(id="report-menu"):
             yield Button("1. Dnevni izveštaj", id="daily-btn", variant="primary", classes="menu-button")
             yield Button("2. Zatvaranje kase", id="cash-btn", variant="success", classes="menu-button")
             yield Button("3. Nisko stanje zaliha", id="stock-btn", variant="warning", classes="menu-button")
-            
+
             if self.is_admin:
                 yield Button("4. Nedeljni izveštaj", id="weekly-btn", variant="default", classes="menu-button")
                 yield Button("5. Mesečni izveštaj", id="monthly-btn", variant="default", classes="menu-button")
                 yield Button("6. Top artikli", id="top-btn", variant="default", classes="menu-button")
-            
+
             yield Button("Zatvori \\[ESC]", id="close-btn", variant="error", classes="menu-button")
-    
+        yield Footer()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "daily-btn":
             self.action_daily_report()
@@ -1707,11 +1720,12 @@ class DailyReportScreen(Screen):
         background: $panel;
     }
     """
-    
+
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("f2", "close", "Main", show=True),
     ]
-    
+
     def __init__(self, daily_reports):
         super().__init__()
         self.daily_reports = daily_reports
@@ -1726,11 +1740,12 @@ class DailyReportScreen(Screen):
             )
             
             yield Static("", id="report-content")
-            
+
             with Horizontal(id="controls"):
                 yield Button("Prikaži", id="show-btn", variant="primary")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-    
+        yield Footer()
+
     def on_mount(self) -> None:
         """Load today's report by default"""
         from datetime import datetime
@@ -3351,9 +3366,10 @@ class POSApp(App):
     #low-stock-banner {
         dock: top;
         height: 1;
-        background: $warning;
+        background: $accent;
+        width: 140;
         color: $text;
-        content-align: center middle;
+        content-align: right middle;
         padding: 0 2;
     }
 
@@ -3425,7 +3441,6 @@ class POSApp(App):
         Binding("f8", "user_management", "Users", show=True),
         Binding("f9", "logout", "Logout", show=True),
         Binding("f10", "customers", "Customers", show=True),
-        Binding("f11", "refunds", "Refunds", show=True),
         Binding("c", "clear_cart", "Clear Cart"),
         Binding("enter", "add_selected", "Add to Cart"),
         Binding("-", "remove_selected", "Remove"),
@@ -3439,7 +3454,6 @@ class POSApp(App):
         db = Database("data.db")
         inv_repo = InventoryRepository(db)
         sales_repo = SalesRepository(db)
-        payment_repo = PaymentRepository(db)
         user_repo = UserRepository(db)
         refund_repo = RefundRepository(db)
         customer_repo = CustomerRepository(db)
@@ -3449,15 +3463,13 @@ class POSApp(App):
             inv_repo,
             sales_repo,
             InvoiceRepository(db),
-            payment_repo,
-            ReceiptRepository(db),
             customer_repo,
-            unified_sales_repo  # New unified sales repository
+            unified_sales_repo
         )
 
         self.reports = ReportService(inv_repo, sales_repo)
         self.daily_reports = DailyReportService(
-            sales_repo, payment_repo, inv_repo, unified_sales_repo
+            sales_repo, None, inv_repo, unified_sales_repo
         )
         self.user_service = UserService(user_repo)
         self.refund_service = RefundService(sales_repo, inv_repo, refund_repo)
@@ -3474,8 +3486,8 @@ class POSApp(App):
     def compose(self) -> ComposeResult:
         """Create child widgets"""
         yield Header()
-        yield Static("", id="user-info") # Shows logged-in user
-        yield Static ("", id="low-stock-banner")
+        yield Static("", id="user-info")  # Shows logged-in user
+        yield Static("", id="low-stock-banner")
 
         # Main container with horizontal layout
         with Horizontal(id="main-container"):
@@ -3509,46 +3521,57 @@ class POSApp(App):
         """Update low stock warning banner"""
         if CONFIG['show_low_stock_banner']:
             low_stock_items = self.reports.low_stock_report(CONFIG["low_stock_threshold"])
-            
+
             banner = self.query_one("#low-stock-banner", Static)
-            
+
             if low_stock_items:
                 count = len(low_stock_items)
                 # Show first 3 items
                 items_preview = ", ".join([item['item'] for item in low_stock_items[:3]])
                 if count > 3:
                     items_preview += f" (+{count - 3} više)"
-                
+
                 banner.update(f"🟡  NISKO STANJE ({count}): {items_preview}")
                 banner.remove_class("hidden")
             else:
                 banner.add_class("hidden")
+
+    def open_main_screen(self, screen, callback=None) -> None:
+        """Open a main screen, dismissing any existing main screen first.
+
+        This prevents main screens from stacking on top of each other.
+        Only the POS (sales) screen and ONE main screen should ever be on the stack.
+        """
+        # Dismiss all screens except the base screen (POS sales screen)
+        # The screen stack looks like: [base_screen, possibly_main_screen, possibly_sub_screens...]
+        # We want to get back to just [base_screen] before pushing the new main screen
+        while len(self.screen_stack) > 1:
+            self.pop_screen()
+
+        # Now push the new main screen
+        if callback:
+            self.push_screen(screen, callback)
+        else:
+            self.push_screen(screen)
 
     def action_user_management(self) -> None:
         """F8 - User Management (admin only)"""
         if not self.require_admin("Upravljanje korisnicima"):
             return
 
-        self.push_screen(UserManagementScreen(self.user_service))
-
+        self.open_main_screen(UserManagementScreen(self.user_service))
 
     def action_customers(self) -> None:
         """F10 - Customer management (admin only)"""
         if not self.require_admin("Upravljanje kupcima"):
             return
-    
-        self.push_screen(CustomerManagementScreen(self.customer_repo))
+
+        self.open_main_screen(CustomerManagementScreen(self.customer_repo))
 
     def action_sales_history(self):
         """F7 - Sales history view"""
-        self.push_screen(
+        self.open_main_screen(
             SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
-        )
-
-    def action_refunds(self):
-        """F11 - Returns and refunds"""
-        self.push_screen(
-            RefundsScreen(self.pos, self.refund_service, self.current_user)
         )
 
     def action_invoices(self) -> None:
@@ -3556,13 +3579,11 @@ class POSApp(App):
         if not self.require_admin("Prijem robe"):
             return
 
-        self.push_screen(InvoiceManagementScreen(self.pos))
+        self.open_main_screen(InvoiceManagementScreen(self.pos))
 
     def handle_login(self, user: dict) -> None:
         """Handle successful login"""
         if user:
-            if user['role'] == "admin":
-                self.push_screen(InventoryManagementScreen(self.pos))
             self.current_user = user
 
             # Update user info bar
@@ -3570,6 +3591,10 @@ class POSApp(App):
             user_info.update(
                 f"👤 {user['full_name']} ({user['role'].upper()}) | F9: Odjava"
             )
+
+            # For admin users, show inventory management screen
+            # if user['role'] == "admin":
+            #    self.push_screen(InventoryManagementScreen(self.pos))
 
             # Update header or show welcome message
             self.notify(
@@ -3932,7 +3957,7 @@ class POSApp(App):
 
         # Process entire cart as one transaction
         try:
-            result = self.pos.sell_multiple_items(
+            result = self.pos.sell_items(
                 items=self.cart,
                 payment_info=payment_info,
                 allow_oversell=CONFIG["allow_oversell"]
@@ -3946,9 +3971,10 @@ class POSApp(App):
 
             # Get the receipt that was generated
             if last_sale_id:
-                receipt_data = self.pos.receipts.get_receipt_by_sale_id(last_sale_id)
+                # Use unified sales to get receipt (receipt_text is in sales table now)
+                sale_record = self.unified_sales.get_by_id(last_sale_id)
 
-                if receipt_data:
+                if sale_record and sale_record.get('receipt_text'):
                     # Prepare sale_data for PDF generation
                     from datetime import datetime
                     sale_data = {
@@ -3967,7 +3993,7 @@ class POSApp(App):
                     # Show receipt viewer with sale_data for PDF
                     self.push_screen(
                         ReceiptViewerScreen(
-                            receipt_data['receipt_text'],
+                            sale_record['receipt_text'],
                             last_sale_id,
                             sale_data
                         ),
@@ -4007,14 +4033,12 @@ class POSApp(App):
         if not self.require_admin("Upravljanje inventarom"):
             return
 
-        # Show submenu for inventory management
-        self.push_screen(InventoryManagementScreen(self.pos))
-        # self.notify("Upravljanje inventarom - u izradi!", severity="information")
+        self.open_main_screen(InventoryManagementScreen(self.pos))
 
     def action_reports(self) -> None:
         # Cashiers can see basic reports, admins see all
         """F4 - Reports"""
-        self.push_screen(
+        self.open_main_screen(
             ReportsScreen(
                 self.daily_reports,
                 self.reports,
@@ -4132,6 +4156,7 @@ class SalesHistoryScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "close", "Zatvori"),
+        Binding("f2", "close", "Main", show=True),
         Binding("r", "refund", "Povraćaj"),
         Binding("p", "print_receipt", "Štampaj"),
         Binding("tab", "switch_panel", "Promeni panel"),
@@ -4171,6 +4196,7 @@ class SalesHistoryScreen(Screen):
                 yield Button("Povraćaj \\[R]", id="refund-btn", variant="warning")
                 yield Button("Štampaj \\[P]", id="print-btn", variant="default")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+        yield Footer()
 
     def on_mount(self) -> None:
         """Setup tables and load today's sales"""
@@ -4324,8 +4350,25 @@ class SalesHistoryScreen(Screen):
         if not self.selected_sale_id:
             self.notify("Izaberite račun za povraćaj", severity="warning")
             return
-        # TODO: Open refund dialog for the selected sale
-        self.notify(f"Povraćaj za račun #{self.selected_sale_id} - funkcija u izradi")
+
+        # Open RefundSaleScreen for the selected sale
+        self.app.push_screen(
+            RefundSaleScreen(
+                sale_id=self.selected_sale_id,
+                unified_sales_repo=self.unified_sales,
+                refund_service=self.refund_service,
+                current_user=self.current_user
+            ),
+            self.handle_refund_result
+        )
+
+    def handle_refund_result(self, result) -> None:
+        """Handle result from refund screen"""
+        if result:
+            # Reload sales to reflect any status changes
+            date = self.query_one("#date-input", Input).value.strip()
+            if date:
+                self.load_sales(date)
 
     def action_print_receipt(self) -> None:
         """Print receipt for selected sale"""
@@ -4339,6 +4382,575 @@ class SalesHistoryScreen(Screen):
             # TODO: Actually print or show receipt
         else:
             self.notify("Račun nema tekst za štampanje", severity="warning")
+
+
+class RefundSaleScreen(Screen):
+    """Screen for processing refunds from a specific sale/receipt"""
+
+    CSS = """
+        RefundSaleScreen {
+            background: $surface;
+        }
+
+        #refund-sale-container {
+            height: 100%;
+            padding: 1;
+        }
+
+        #sale-header {
+            height: auto;
+            background: $primary;
+            padding: 1;
+            margin-bottom: 1;
+        }
+
+        #sale-header Static {
+            color: $text;
+        }
+
+        #items-section {
+            height: 1fr;
+            border: solid $primary;
+            margin-bottom: 1;
+        }
+
+        #items-table {
+            height: 100%;
+        }
+
+        #controls {
+            dock: bottom;
+            height: auto;
+            layout: horizontal;
+            background: $panel;
+            padding: 1;
+        }
+
+        #controls Button {
+            margin-right: 1;
+        }
+
+        .refund-info {
+            color: $warning;
+            padding: 0 1;
+        }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("a", "refund_all", "Ceo račun"),
+        Binding("r", "refund_item", "Stavku"),
+    ]
+
+    def __init__(self, sale_id: int, unified_sales_repo, refund_service, current_user):
+        super().__init__()
+        self.sale_id = sale_id
+        self.unified_sales = unified_sales_repo
+        self.refund_service = refund_service
+        self.current_user = current_user
+        self.sale_data = None
+        self.items_with_refunds = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="refund-sale-container"):
+            yield Label("↩️  POVRAĆAJ RAČUNA", classes="label")
+
+            with Vertical(id="sale-header"):
+                yield Static("Učitavanje...", id="sale-info")
+
+            with Vertical(id="items-section"):
+                yield DataTable(id="items-table")
+
+            with Horizontal(id="controls"):
+                yield Button("Povraćaj ceo račun \\[A]", id="refund-all-btn", variant="error")
+                yield Button("Povraćaj stavku \\[R]", id="refund-item-btn", variant="warning")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Load sale data and setup table"""
+        # Setup table
+        table = self.query_one("#items-table", DataTable)
+        table.add_columns("Artikal", "Prodato", "Vraćeno", "Dostupno", "Cena", "Ukupno")
+        table.cursor_type = "row"
+
+        # Load sale data
+        self.load_sale_data()
+
+    def load_sale_data(self) -> None:
+        """Load the sale and its items with refund info"""
+        self.sale_data = self.unified_sales.get_sale_with_items(self.sale_id)
+
+        if not self.sale_data:
+            self.notify("Račun nije pronađen!", severity="error")
+            self.dismiss(None)
+            return
+
+        sale = self.sale_data['sale']
+        items = self.sale_data['items']
+
+        # Get existing refunds for this sale
+        refunds = self.unified_sales.get_refunds_for_sale(self.sale_id)
+
+        # Calculate refunded quantities per item
+        refunded_by_item = {}
+        for refund in refunds:
+            item_name = refund['item']
+            refunded_by_item[item_name] = refunded_by_item.get(item_name, 0) + refund['quantity']
+
+        # Update header
+        sale_info = self.query_one("#sale-info", Static)
+        status_text = ""
+        if sale['status'] == 'refunded':
+            status_text = " [VRAĆEN]"
+        elif sale['status'] == 'partial_refund':
+            status_text = " [DELIMIČNO VRAĆEN]"
+
+        sale_info.update(
+            f"Račun #{sale['receipt_number']}{status_text}\n"
+            f"Datum: {sale['created_at']}\n"
+            f"Ukupno: {sale['total_amount']:.2f} RSD | "
+            f"Plaćanje: {sale['payment_type']}"
+        )
+
+        # Populate table
+        table = self.query_one("#items-table", DataTable)
+        table.clear()
+
+        self.items_with_refunds = []
+        for item in items:
+            refunded_qty = refunded_by_item.get(item['item'], 0)
+            available_qty = item['quantity'] - refunded_qty
+
+            self.items_with_refunds.append({
+                'item': item['item'],
+                'item_price': item['item_price'],
+                'quantity_sold': item['quantity'],
+                'quantity_refunded': refunded_qty,
+                'quantity_available': available_qty,
+                'total': item['total']
+            })
+
+            # Show refunded in table if any
+            refund_display = f"{refunded_qty:.2f}" if refunded_qty > 0 else "-"
+            available_display = f"{available_qty:.2f}" if available_qty > 0 else "0"
+
+            table.add_row(
+                item['item'],
+                f"{item['quantity']:.2f}",
+                refund_display,
+                available_display,
+                f"{item['item_price']:.2f}",
+                f"{item['total']:.2f}"
+            )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "refund-all-btn":
+            self.action_refund_all()
+        elif event.button.id == "refund-item-btn":
+            self.action_refund_item()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_refund_all(self) -> None:
+        """Refund entire receipt - all items with available quantity"""
+        if not self.items_with_refunds:
+            self.notify("Nema stavki za povraćaj!", severity="warning")
+            return
+
+        # Check if there's anything to refund
+        has_available = any(item['quantity_available'] > 0 for item in self.items_with_refunds)
+        if not has_available:
+            self.notify("Sve stavke su već vraćene!", severity="warning")
+            return
+
+        # Show confirmation dialog
+        self.app.push_screen(
+            RefundConfirmScreen(
+                items=self.items_with_refunds,
+                refund_all=True,
+                refund_service=self.refund_service,
+                sale_id=self.sale_id,
+                user_id=self.current_user['id'],
+                unified_sales=self.unified_sales
+            ),
+            self.handle_refund_result
+        )
+
+    def action_refund_item(self) -> None:
+        """Refund selected item"""
+        table = self.query_one("#items-table", DataTable)
+
+        if table.cursor_row is None or not self.items_with_refunds:
+            self.notify("Izaberite stavku za povraćaj!", severity="warning")
+            return
+
+        if table.cursor_row >= len(self.items_with_refunds):
+            self.notify("Neispravna stavka!", severity="error")
+            return
+
+        item = self.items_with_refunds[table.cursor_row]
+
+        if item['quantity_available'] <= 0:
+            self.notify(f"Stavka '{item['item']}' je već potpuno vraćena!", severity="warning")
+            return
+
+        # Open quantity input screen for single item
+        self.app.push_screen(
+            RefundItemQuantityScreen(
+                item=item,
+                refund_service=self.refund_service,
+                sale_id=self.sale_id,
+                user_id=self.current_user['id'],
+                unified_sales=self.unified_sales
+            ),
+            self.handle_refund_result
+        )
+
+    def handle_refund_result(self, result) -> None:
+        """Handle result from refund screens"""
+        if result:
+            self.notify("Povraćaj uspešno obrađen!", severity="information")
+            # Reload data to show updated quantities
+            self.load_sale_data()
+
+
+class RefundItemQuantityScreen(Screen):
+    """Screen for inputting refund quantity for a single item"""
+
+    CSS = """
+        RefundItemQuantityScreen {
+            align: center middle;
+        }
+
+        #quantity-dialog {
+            width: 60;
+            height: auto;
+            border: thick $warning;
+            background: $surface;
+            padding: 2;
+        }
+
+        #item-info {
+            padding: 1;
+            background: $panel;
+            margin-bottom: 1;
+        }
+
+        .input-label {
+            padding: 1 0 0 0;
+        }
+
+        Input {
+            margin-bottom: 1;
+        }
+
+        #refund-method {
+            layout: horizontal;
+            height: auto;
+            margin: 1 0;
+        }
+
+        #buttons {
+            layout: horizontal;
+            height: auto;
+            margin-top: 1;
+        }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Otkaži"),
+    ]
+
+    def __init__(self, item: dict, refund_service, sale_id: int, user_id: int, unified_sales):
+        super().__init__()
+        self.item = item
+        self.refund_service = refund_service
+        self.sale_id = sale_id
+        self.user_id = user_id
+        self.unified_sales = unified_sales
+        self.refund_method = "cash"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="quantity-dialog"):
+            yield Label("↩️  POVRAĆAJ STAVKE", classes="label")
+
+            yield Static(
+                f"Artikal: {self.item['item']}\n"
+                f"Prodato: {self.item['quantity_sold']:.2f} kom\n"
+                f"Već vraćeno: {self.item['quantity_refunded']:.2f} kom\n"
+                f"Dostupno za povraćaj: {self.item['quantity_available']:.2f} kom\n"
+                f"Cena: {self.item['item_price']:.2f} RSD",
+                id="item-info"
+            )
+
+            yield Label("Količina za povraćaj (1 - " + f"{self.item['quantity_available']:.2f}):", classes="input-label")
+            yield Input(
+                placeholder="Količina...",
+                id="quantity-input",
+                type="number",
+                value=str(int(self.item['quantity_available']))
+            )
+
+            yield Label("Razlog povraćaja:", classes="input-label")
+            yield Input(
+                placeholder="Opciono - razlog povraćaja...",
+                id="reason-input"
+            )
+
+            yield Label("Način povraćaja:", classes="input-label")
+            with Horizontal(id="refund-method"):
+                yield Button("Gotovina", id="cash-btn", variant="primary")
+                yield Button("Kartica", id="card-btn", variant="default")
+
+            with Horizontal(id="buttons"):
+                yield Button("Izvrši povraćaj", id="process-btn", variant="warning")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+
+    def on_mount(self) -> None:
+        self.query_one("#quantity-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cash-btn":
+            self.refund_method = "cash"
+            event.button.variant = "primary"
+            self.query_one("#card-btn", Button).variant = "default"
+        elif event.button.id == "card-btn":
+            self.refund_method = "card"
+            event.button.variant = "primary"
+            self.query_one("#cash-btn", Button).variant = "default"
+        elif event.button.id == "process-btn":
+            self.process_refund()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def process_refund(self) -> None:
+        """Process the refund for this item"""
+        quantity_str = self.query_one("#quantity-input", Input).value.strip()
+        reason = self.query_one("#reason-input", Input).value.strip()
+
+        if not quantity_str:
+            self.notify("Unesite količinu!", severity="error")
+            return
+
+        try:
+            quantity = float(quantity_str)
+
+            if quantity <= 0:
+                self.notify("Količina mora biti veća od 0!", severity="error")
+                return
+
+            if quantity > self.item['quantity_available']:
+                self.notify(
+                    f"Maksimalna količina za povraćaj je {self.item['quantity_available']:.2f}!",
+                    severity="error"
+                )
+                return
+
+            # Process refund
+            success, message = self.refund_service.process_refund(
+                sale_id=self.sale_id,
+                item_name=self.item['item'],
+                quantity=quantity,
+                refund_method=self.refund_method,
+                reason=reason,
+                user_id=self.user_id
+            )
+
+            if success:
+                # Update sale status
+                self._update_sale_status()
+                self.notify(message, severity="information")
+                self.dismiss(True)
+            else:
+                self.notify(message, severity="error")
+
+        except ValueError:
+            self.notify("Neispravna količina!", severity="error")
+
+    def _update_sale_status(self) -> None:
+        """Update the sale status based on refund state"""
+        # Get updated refund info
+        refunds = self.unified_sales.get_refunds_for_sale(self.sale_id)
+        sale_data = self.unified_sales.get_sale_with_items(self.sale_id)
+
+        if not sale_data:
+            return
+
+        items = sale_data['items']
+
+        # Calculate total sold and refunded
+        total_sold = sum(item['quantity'] for item in items)
+        total_refunded = sum(r['quantity'] for r in refunds)
+
+        if total_refunded >= total_sold:
+            self.unified_sales.update_status(self.sale_id, 'refunded')
+        elif total_refunded > 0:
+            self.unified_sales.update_status(self.sale_id, 'partial_refund')
+
+
+class RefundConfirmScreen(Screen):
+    """Screen for confirming full receipt refund"""
+
+    CSS = """
+        RefundConfirmScreen {
+            align: center middle;
+        }
+
+        #confirm-dialog {
+            width: 70;
+            height: auto;
+            border: thick $error;
+            background: $surface;
+            padding: 2;
+        }
+
+        #items-summary {
+            height: auto;
+            max-height: 15;
+            overflow-y: auto;
+            background: $panel;
+            padding: 1;
+            margin: 1 0;
+        }
+
+        #total-section {
+            background: $warning 20%;
+            padding: 1;
+            margin: 1 0;
+        }
+
+        .input-label {
+            padding: 1 0 0 0;
+        }
+
+        Input {
+            margin-bottom: 1;
+        }
+
+        #refund-method {
+            layout: horizontal;
+            height: auto;
+            margin: 1 0;
+        }
+
+        #buttons {
+            layout: horizontal;
+            height: auto;
+            margin-top: 1;
+        }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Otkaži"),
+    ]
+
+    def __init__(self, items: list, refund_all: bool, refund_service, sale_id: int, user_id: int, unified_sales):
+        super().__init__()
+        self.items = items
+        self.refund_all = refund_all
+        self.refund_service = refund_service
+        self.sale_id = sale_id
+        self.user_id = user_id
+        self.unified_sales = unified_sales
+        self.refund_method = "cash"
+
+    def compose(self) -> ComposeResult:
+        # Calculate totals
+        refund_items = []
+        total_refund = 0
+
+        for item in self.items:
+            if item['quantity_available'] > 0:
+                refund_amount = item['quantity_available'] * item['item_price']
+                total_refund += refund_amount
+                refund_items.append(
+                    f"  {item['item']}: {item['quantity_available']:.2f} x {item['item_price']:.2f} = {refund_amount:.2f} RSD"
+                )
+
+        items_text = "\n".join(refund_items)
+
+        with Vertical(id="confirm-dialog"):
+            yield Label("⚠️  POVRAĆAJ CELOG RAČUNA", classes="label")
+
+            yield Label("Stavke za povraćaj:", classes="input-label")
+            yield Static(items_text, id="items-summary")
+
+            yield Static(
+                f"UKUPNO ZA POVRAĆAJ: {total_refund:.2f} RSD",
+                id="total-section"
+            )
+
+            yield Label("Razlog povraćaja:", classes="input-label")
+            yield Input(
+                placeholder="Opciono - razlog povraćaja...",
+                id="reason-input"
+            )
+
+            yield Label("Način povraćaja:", classes="input-label")
+            with Horizontal(id="refund-method"):
+                yield Button("Gotovina", id="cash-btn", variant="primary")
+                yield Button("Kartica", id="card-btn", variant="default")
+
+            with Horizontal(id="buttons"):
+                yield Button("Potvrdi povraćaj", id="confirm-btn", variant="error")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "cash-btn":
+            self.refund_method = "cash"
+            event.button.variant = "primary"
+            self.query_one("#card-btn", Button).variant = "default"
+        elif event.button.id == "card-btn":
+            self.refund_method = "card"
+            event.button.variant = "primary"
+            self.query_one("#cash-btn", Button).variant = "default"
+        elif event.button.id == "confirm-btn":
+            self.process_full_refund()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def process_full_refund(self) -> None:
+        """Process refunds for all items with available quantity"""
+        reason = self.query_one("#reason-input", Input).value.strip()
+
+        success_count = 0
+        fail_count = 0
+
+        for item in self.items:
+            if item['quantity_available'] > 0:
+                success, message = self.refund_service.process_refund(
+                    sale_id=self.sale_id,
+                    item_name=item['item'],
+                    quantity=item['quantity_available'],
+                    refund_method=self.refund_method,
+                    reason=reason,
+                    user_id=self.user_id
+                )
+
+                if success:
+                    success_count += 1
+                else:
+                    fail_count += 1
+
+        # Update sale status to fully refunded
+        self.unified_sales.update_status(self.sale_id, 'refunded')
+
+        if fail_count == 0:
+            self.notify(f"Povraćaj uspešan za {success_count} stavki!", severity="information")
+            self.dismiss(True)
+        else:
+            self.notify(f"Povraćaj: {success_count} uspešnih, {fail_count} neuspešnih", severity="warning")
+            self.dismiss(True)
 
 
 class RefundsScreen(Screen):
@@ -4414,11 +5026,12 @@ class RefundsScreen(Screen):
                 yield Button("Povraćaj računa \\[A]", id="refund-all-btn", variant="error")
                 yield Button("Istorija \\[H]", id="history-btn", variant="default")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-    
+        yield Footer()
+
     def on_mount(self) -> None:
         """Setup and load today's sales"""
         from datetime import datetime
-        
+
         # Setup table
         try:
             table = self.query_one("#sales-table", DataTable)

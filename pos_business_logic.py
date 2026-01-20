@@ -45,119 +45,25 @@ class InvoiceItem:
 class POSService:
     """Main business logic service for POS operations"""
 
-    def __init__(self, inventory_repo, sales_repo, invoice_repo, payment_repo, receipt_repo,
-                 customer_repo=None, unified_sales_repo=None):
+    def __init__(self, inventory_repo, sales_repo, invoice_repo,
+                 customer_repo=None, unified_sales_repo=None,
+                 payment_repo=None, receipt_repo=None):
         self.inventory = inventory_repo
         self.sales = sales_repo  # Old SalesRepository (for backward compat)
         self.invoices = invoice_repo
-        self.payments = payment_repo  # Deprecated - kept for backward compat
-        self.receipts = receipt_repo  # Deprecated - kept for backward compat
+        self.payments = payment_repo  # Deprecated - only used in legacy fallback
+        self.receipts = receipt_repo  # Deprecated - only used in legacy fallback
         self.customers = customer_repo
         self.unified_sales = unified_sales_repo  # New UnifiedSalesRepository
         self.fiscal_printer = FiscalReceipt(STORE_CONFIG)
     
-    def sell_item(self, item_id: int, quantity: float,
-                  payment_info: Optional[PaymentInfo] = None,
-                  allow_oversell: bool = False) -> SaleResult:
+    def sell_items(self, items: List[dict], payment_info: PaymentInfo,
+                   allow_oversell: bool = False) -> SaleResult:
         """
-        Sell an item from inventory
-        
-        Args:
-            item_id: ID of item to sell
-            quantity: Quantity to sell
-            allow_oversell: If True, allow selling more than available stock
-            
-        Returns:
-            SaleResult with success status and details
-        """
-        # Get item from inventory
-        item = self.inventory.get_by_id(item_id)
-        if not item:
-            return SaleResult(
-                success=False,
-                message=f"Item with ID {item_id} not found"
-            )
-        
-        # Check stock availability
-        current_qty = item['quantity']
-        if current_qty < quantity and not allow_oversell:
-            return SaleResult(
-                success=False,
-                message=f"Insufficient stock. Available: {current_qty}, Requested: {quantity}",
-                remaining_quantity=current_qty
-            )
-        
-        # Record the sale with payment info
-        amount_paid = None
-        change = None
-        
-        if payment_info:
-            if payment_info.payment_type == 'cash':
-                amount_paid = payment_info.amount_tendered
-                change = payment_info.change_given
-            elif payment_info.payment_type == 'card':
-                amount_paid = item['price'] * quantity
-                change = 0.0
-            elif payment_info.payment_type == 'split':
-                amount_paid = payment_info.cash_amount + payment_info.card_amount
-                change = payment_info.change_given
-        
-        sale_id = self.sales.record_sale(
-            item=item['item'],
-            price=item['price'],
-            quantity=quantity,
-            amount_paid=amount_paid,
-            change_given=change
-        )
-        
-        # Record payment method(s)
-        if payment_info:
-            if payment_info.payment_type == 'split':
-                # Split payment - record both
-                self.payments.record_payment(sale_id, 'cash', payment_info.cash_amount)
-                self.payments.record_payment(sale_id, 'card', payment_info.card_amount)
-            else:
-                # Single payment method
-                total = item['price'] * quantity
-                self.payments.record_payment(sale_id, payment_info.payment_type, total) 
-        
-        # Update inventory
-        self.inventory.update_quantity(item_id, -quantity)
-
-        # Generate and print receipt if payment info provided
-        receipt_text = None
-        if payment_info:
-            receipt_text = self.generate_and_print_receipt(
-                sale_id=sale_id,
-                item_data={
-                    'item': item['item'],
-                    'price': item['price'],
-                    'quantity': quantity,
-                    'vat_rate': item.get('vat_rate', 0.20)
-                },
-                payment_info=payment_info
-            )
-            # Print to screen
-            print("\n" + "=" * 50)
-            print("FISKALNI RAČUN")
-            print("=" * 50)
-            print(receipt_text)
-        
-        return SaleResult(
-            success=True,
-            message=f"Sold {quantity}x {item['item']}",
-            remaining_quantity=current_qty - quantity,
-            sale_id=sale_id,
-            payment_info=payment_info
-        )
-
-    def sell_multiple_items(self, items: List[dict], payment_info: PaymentInfo,
-                            allow_oversell: bool = False) -> SaleResult:
-        """
-        Sell multiple items in one transaction
+        Sell one or more items in a single transaction.
 
         Args:
-            items: List of dicts with 'id', 'quantity'
+            items: List of dicts with 'id' and 'quantity'
             payment_info: Payment details
             allow_oversell: Allow selling out of stock items
 
@@ -165,6 +71,9 @@ class POSService:
             SaleResult for the transaction
         """
         from datetime import datetime
+
+        if not items:
+            return SaleResult(success=False, message="No items to sell")
 
         # Validate all items first
         all_items_data = []
@@ -196,12 +105,12 @@ class POSService:
             all_items_data.append({
                 'id': item['id'],
                 'item': item['item'],
-                'item_name': item['item'],  # For unified sales
+                'item_name': item['item'],
                 'price': item['price'],
-                'unit_price': item['price'],  # For unified sales
+                'unit_price': item['price'],
                 'quantity': cart_item['quantity'],
                 'vat_rate': vat_rate,
-                'item_id': item['id'],  # For unified sales
+                'item_id': item['id'],
                 'total': item_total
             })
 
@@ -212,7 +121,6 @@ class POSService:
             if customer_info:
                 customer_info['tax_id_type'] = payment_info.customer_tax_id_type
 
-        # Generate receipt FIRST to get receipt number
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
         # Use unified sales repository if available (new structure)
@@ -220,7 +128,7 @@ class POSService:
             receipt_number = self.unified_sales.get_next_receipt_number()
 
             sale_data = {
-                'sale_id': None,  # Will be set after creation
+                'sale_id': None,
                 'timestamp': timestamp,
                 'items': all_items_data,
                 'payment_info': {
@@ -233,10 +141,8 @@ class POSService:
                 'customer_info': customer_info
             }
 
-            # Generate receipt text
             receipt_text = self.fiscal_printer.generate_receipt(sale_data)
 
-            # Create sale with all items in one atomic transaction
             sale_id = self.unified_sales.create_sale_with_items(
                 receipt_number=receipt_number,
                 payment_type=payment_info.payment_type,
@@ -251,7 +157,6 @@ class POSService:
                 receipt_text=receipt_text
             )
 
-            # Update inventory for each item
             for item_data in all_items_data:
                 self.inventory.update_quantity(item_data['id'], -item_data['quantity'])
 
@@ -269,7 +174,6 @@ class POSService:
                 sale_ids.append(sale_id)
                 self.inventory.update_quantity(item_data['id'], -item_data['quantity'])
 
-            # Record payment
             if payment_info.payment_type == 'split':
                 self.payments.record_payment(sale_ids[0], 'cash', payment_info.cash_amount)
                 self.payments.record_payment(sale_ids[0], 'card', payment_info.card_amount)
@@ -299,13 +203,21 @@ class POSService:
                 receipt_text=receipt_text
             )
 
+        # Calculate remaining quantity for single-item sales
+        remaining_qty = None
+        if len(items) == 1:
+            item = self.inventory.get_by_id(items[0]['id'])
+            if item:
+                remaining_qty = item['quantity']
+
         return SaleResult(
             success=True,
-            message=f"Sold {len(items)} items",
+            message=f"Sold {len(items)} item(s)",
             sale_id=sale_id,
             payment_info=payment_info,
             sale_items=all_items_data,
-            customer_info=customer_info
+            customer_info=customer_info,
+            remaining_quantity=remaining_qty
         )
 
     def search_inventory(self, search_term: str = "") -> List[dict]:
@@ -329,30 +241,40 @@ class POSService:
         """
         return self.inventory.get_by_barcode(barcode)
 
-    def sell_item_by_barcode(self, barcode: str, quantity: float = 1.0, 
+    def sell_item_by_barcode(self, barcode: str, quantity: float = 1.0,
                              payment_info: Optional[PaymentInfo] = None,
                              allow_oversell: bool = False) -> SaleResult:
         """
         Sell item using barcode instead of ID
- 
+
         Args:
             barcode: Scanned barcode
             quantity: How many to sell (default 1)
+            payment_info: Payment details (required for sale)
             allow_oversell: Allow selling when out of stock
-        
+
         Returns:
             SaleResult with success/failure info
         """
-        # Find item by barcode
         item = self.inventory.get_by_barcode(barcode)
 
         if not item:
             return SaleResult(
-                success = False,
-                message = f"Barcode '{barcode}' not found in system"
+                success=False,
+                message=f"Barcode '{barcode}' not found in system"
             )
-        # Use existing sell_item logic
-        return self.sell_item(item['id'], quantity, payment_info, allow_oversell)
+
+        if not payment_info:
+            return SaleResult(
+                success=False,
+                message="Payment info is required"
+            )
+
+        return self.sell_items(
+            items=[{'id': item['id'], 'quantity': quantity}],
+            payment_info=payment_info,
+            allow_oversell=allow_oversell
+        )
 
     def search_sales(self, search_term: str) -> List[dict]:
         """Search sales history"""

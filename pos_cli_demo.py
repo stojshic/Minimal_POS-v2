@@ -2,7 +2,7 @@
 Simple CLI demo showing how to use the backend
 This can be replaced with Textual TUI or GUI
 """
-from pos_db_layer import Database, InventoryRepository, SalesRepository, InvoiceRepository, PaymentRepository, ReceiptRepository
+from pos_db_layer import Database, InventoryRepository, SalesRepository, InvoiceRepository, UnifiedSalesRepository
 from pos_business_logic import POSService, ReportService, InvoiceItem, PaymentInfo, DailyReportService
 import pandas as pd
 
@@ -15,19 +15,20 @@ class SimpleCLI:
         db = Database("data.db")
         inv_repo = InventoryRepository(db)
         sales_repo = SalesRepository(db)
+        unified_sales_repo = UnifiedSalesRepository(db)
 
         self.pos = POSService(
-            InventoryRepository(db),
-            SalesRepository(db),
+            inv_repo,
+            sales_repo,
             InvoiceRepository(db),
-            PaymentRepository(db),
-            ReceiptRepository(db)
+            unified_sales_repo=unified_sales_repo
         )
         self.reports = ReportService(inv_repo, sales_repo)
         self.daily_report = DailyReportService(
             sales_repo,
-            PaymentRepository(db),
-            inv_repo
+            None,
+            inv_repo,
+            unified_sales_repo
         )
 
         self.menu = {
@@ -185,17 +186,22 @@ class SimpleCLI:
                 return
             
             # Now process the sale with payment info
-            if item_id:
-                result = self.pos.sell_item(item_id, quantity, payment_info=payment_info, allow_oversell=False)
-            else:
-                result = self.pos.sell_item_by_barcode(id_or_barcode, quantity, payment_info=payment_info, allow_oversell=False)
+            result = self.pos.sell_items(
+                items=[{'id': item_id, 'quantity': quantity}],
+                payment_info=payment_info,
+                allow_oversell=False
+            )
             if not result.success:
                 # Ask if they want to oversell
                 print(f"\n⚠️  {result.message}")
                 if result.remaining_quantity is not None:
                     choice = input("Nastaviti prodaju? (d/n): ")
                     if choice.lower() == 'd':
-                        result = self.pos.sell_item(item_id, quantity, allow_oversell=True)
+                        result = self.pos.sell_items(
+                            items=[{'id': item_id, 'quantity': quantity}],
+                            payment_info=payment_info,
+                            allow_oversell=True
+                        )
             
             if result.success:
                 print(f"\n✅ {result.message}")
