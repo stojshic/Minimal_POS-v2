@@ -1437,111 +1437,299 @@ class AddEditItemScreen(Screen):
         self.dismiss(None)
 
 
-class InvoiceManagementScreen(Screen):
-    """Screen for receiving goods via invoices"""
+class OtpremniceScreen(Screen):
+    """Screen for managing otpremnice (delivery notes / invoices for receiving goods)"""
 
     CSS = """
-    InvoiceManagementScreen {
+    OtpremniceScreen {
         background: $surface;
     }
 
-    #invoice-container {
+    #otpremnice-container {
         height: 100%;
         padding: 1;
     }
 
-    #invoice-header {
-        height: auto;
-        background: $panel;
-        padding: 1;
-        margin-bottom: 1;
-    }
-
-    #invoice-items-table {
+    #main-panels {
+        layout: horizontal;
         height: 1fr;
-        border: solid $primary;
-        margin-bottom: 1;
     }
 
-    #invoice-controls {
+    #left-panel {
+        width: 2fr;
+        border: solid $primary;
+        padding: 1;
+        margin-right: 1;
+    }
+
+    #right-panel {
+        width: 3fr;
+        border: solid $accent;
+        padding: 1;
+    }
+
+    #otpremnice-list {
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #items-table {
+        height: 1fr;
+        margin-top: 1;
+    }
+
+    #right-header {
+        layout: horizontal;
+        height: auto;
+    }
+
+    #invoice-number-input {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    #otpremnice-controls {
         dock: bottom;
         height: auto;
         layout: horizontal;
         background: $panel;
         padding: 1;
     }
+
+    .label {
+        padding: 1 0;
+        text-style: bold;
+        color: $accent;
+    }
+
+    .section-label {
+        padding: 0 0 1 0;
+        text-style: bold;
+    }
+
+    #total-label {
+        padding: 1;
+        text-style: bold;
+        background: $success;
+        color: $text;
+        text-align: center;
+        margin-top: 1;
+    }
+
+    Button {
+        margin: 0 1;
+    }
     """
 
     BINDINGS = [
         Binding("escape", "close", "Close"),
         Binding("f2", "close", "Main", show=True),
-        Binding("n", "add_item", "Add Item"),
-        Binding("d", "remove_item", "Remove Item"),
-        Binding("s", "save_invoice", "Save Invoice"),
+        Binding("n", "new_otpremnica", "Nova"),
+        Binding("a", "add_item", "Dodaj stavku"),
+        Binding("d", "remove_item", "Ukloni"),
+        Binding("s", "save_otpremnica", "Sačuvaj"),
     ]
 
-    def __init__(self, pos_service):
+    def __init__(self, pos_service, invoice_repo):
         super().__init__()
         self.pos_service = pos_service
-        self.invoice_items = []  # Items to add to invoice
+        self.invoice_repo = invoice_repo
+        self.invoice_items = []  # Items for new otpremnica
+        self.editing_mode = False  # True when creating new otpremnica
+        self.selected_otpremnica_id = None  # Currently selected from list
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="invoice-container"):
-            yield Label("📄 PRIJEM ROBE - NOVA FAKTURA", classes="label")
+        with Vertical(id="otpremnice-container"):
+            yield Label("📄 OTPREMNICE - PRIJEM ROBE", classes="label")
 
-            with Vertical(id="invoice-header"):
-                yield Label("Broj fakture:")
-                yield Input(placeholder="Unesite broj fakture...", id="invoice-number-input")
+            with Horizontal(id="main-panels"):
+                # Left panel - List of previous otpremnice
+                with Vertical(id="left-panel"):
+                    yield Button("+ Nova otpremnica \\[N]", id="new-btn", variant="success")
+                    yield Label("Prethodne otpremnice:", classes="section-label")
+                    yield DataTable(id="otpremnice-list", zebra_stripes=True)
 
-            yield Label("Stavke fakture:")
-            yield DataTable(id="invoice-items-table")
+                # Right panel - Items for selected/new otpremnica
+                with Vertical(id="right-panel"):
+                    yield Label("Stavke otpremnice:", classes="section-label")
+                    with Horizontal(id="right-header"):
+                        yield Input(
+                            placeholder="Broj otpremnice...",
+                            id="invoice-number-input",
+                            disabled=True
+                        )
+                        yield Button("Dodaj stavku \\[A]", id="add-item-btn", variant="primary", disabled=True)
+                    yield DataTable(id="items-table", zebra_stripes=True)
+                    yield Static("UKUPNO: 0.00 RSD", id="total-label")
 
-            with Horizontal(id="invoice-controls"):
-                yield Button("Dodaj stavku \\[N]", id="add-item-btn", variant="success")
-                yield Button("Ukloni \\[D]", id="remove-item-btn", variant="error")
-                yield Button("Sačuvaj fakturu \\[S]", id="save-btn", variant="primary")
-                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="default")
+            with Horizontal(id="otpremnice-controls"):
+                yield Button("Sačuvaj \\[S]", id="save-btn", variant="success", disabled=True)
+                yield Button("Ukloni stavku \\[D]", id="remove-item-btn", variant="error", disabled=True)
+                yield Button("Otkaži", id="cancel-btn", variant="warning", disabled=True)
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Setup table"""
-        table = self.query_one("#invoice-items-table", DataTable)
-        table.add_columns("Naziv", "Barkod", "Cena", "Količina", "Ukupno")
-        table.cursor_type = "row"
+        """Setup tables"""
+        # Setup otpremnice list table
+        list_table = self.query_one("#otpremnice-list", DataTable)
+        list_table.add_columns("ID", "Broj", "Datum", "Vreme", "Ukupno")
+        list_table.cursor_type = "row"
 
-        self.query_one("#invoice-number-input", Input).focus()
+        # Setup items table
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.add_columns("Naziv", "Barkod", "Cena", "Količina", "Ukupno")
+        items_table.cursor_type = "row"
+
+        # Load existing otpremnice
+        self.load_otpremnice_list()
+
+    def load_otpremnice_list(self) -> None:
+        """Load all otpremnice into left table"""
+        table = self.query_one("#otpremnice-list", DataTable)
+        table.clear()
+
+        invoices = self.invoice_repo.get_all_invoices()
+        for inv in invoices:
+            # Get total for this invoice
+            details = self.invoice_repo.get_invoice_details(inv['id'])
+            total = details['total'] if details else 0
+
+            table.add_row(
+                str(inv['id']),
+                inv['invoice'],
+                inv.get('date', ''),
+                inv.get('time', ''),
+                f"{total:.2f}"
+            )
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle row selection in otpremnice list"""
+        if event.data_table.id == "otpremnice-list" and not self.editing_mode:
+            # Get selected otpremnica ID
+            row = event.data_table.get_row(event.row_key)
+            otpremnica_id = int(row[0])
+            self.selected_otpremnica_id = otpremnica_id
+            self.show_otpremnica_items(otpremnica_id)
+
+    def show_otpremnica_items(self, otpremnica_id: int) -> None:
+        """Display items for selected otpremnica"""
+        details = self.invoice_repo.get_invoice_details(otpremnica_id)
+        if not details:
+            return
+
+        # Update invoice number display
+        invoice_input = self.query_one("#invoice-number-input", Input)
+        invoice_input.value = details['header']['invoice']
+
+        # Update items table
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.clear()
+
+        for item in details['items']:
+            items_table.add_row(
+                item['item'],
+                "",  # Barcode not stored in invoice_data
+                f"{item['price']:.2f}",
+                f"{item['quantity']:.2f}",
+                f"{item['total']:.2f}"
+            )
+
+        # Update total
+        self.update_total_label(details['total'])
+
+    def update_total_label(self, total: float) -> None:
+        """Update the total label"""
+        label = self.query_one("#total-label", Static)
+        label.update(f"UKUPNO: {total:.2f} RSD")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "add-item-btn":
+        if event.button.id == "new-btn":
+            self.action_new_otpremnica()
+        elif event.button.id == "add-item-btn":
             self.action_add_item()
         elif event.button.id == "remove-item-btn":
             self.action_remove_item()
         elif event.button.id == "save-btn":
-            self.action_save_invoice()
+            self.action_save_otpremnica()
         elif event.button.id == "cancel-btn":
+            self.action_cancel_edit()
+        elif event.button.id == "close-btn":
             self.action_close()
 
+    def action_new_otpremnica(self) -> None:
+        """Start creating new otpremnica"""
+        self.editing_mode = True
+        self.invoice_items = []
+        self.selected_otpremnica_id = None
+
+        # Enable editing controls
+        self.query_one("#invoice-number-input", Input).disabled = False
+        self.query_one("#invoice-number-input", Input).value = ""
+        self.query_one("#invoice-number-input", Input).focus()
+        self.query_one("#add-item-btn", Button).disabled = False
+        self.query_one("#save-btn", Button).disabled = False
+        self.query_one("#remove-item-btn", Button).disabled = False
+        self.query_one("#cancel-btn", Button).disabled = False
+
+        # Clear items table
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.clear()
+        self.update_total_label(0)
+
+        self.notify("Nova otpremnica - unesite broj i dodajte stavke", severity="information")
+
+    def action_cancel_edit(self) -> None:
+        """Cancel creating new otpremnica"""
+        self.editing_mode = False
+        self.invoice_items = []
+
+        # Disable editing controls
+        self.query_one("#invoice-number-input", Input).disabled = True
+        self.query_one("#invoice-number-input", Input).value = ""
+        self.query_one("#add-item-btn", Button).disabled = True
+        self.query_one("#save-btn", Button).disabled = True
+        self.query_one("#remove-item-btn", Button).disabled = True
+        self.query_one("#cancel-btn", Button).disabled = True
+
+        # Clear items table
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.clear()
+        self.update_total_label(0)
+
+        self.notify("Otkazano", severity="warning")
+
     def action_add_item(self) -> None:
-        """Add item to invoice"""
+        """Add item to new otpremnica"""
+        if not self.editing_mode:
+            self.notify("Prvo kliknite 'Nova otpremnica'", severity="warning")
+            return
+
         self.app.push_screen(
             AddInvoiceItemScreen(self.pos_service),
             self.handle_item_added
         )
 
     def action_remove_item(self) -> None:
-        """Remove selected item from invoice"""
-        table = self.query_one("#invoice-items-table", DataTable)
+        """Remove selected item from new otpremnica"""
+        if not self.editing_mode:
+            return
+
+        table = self.query_one("#items-table", DataTable)
         if table.cursor_row is not None and self.invoice_items:
             del self.invoice_items[table.cursor_row]
             self.update_items_display()
             self.notify("Stavka uklonjena", severity="warning")
 
-    def action_save_invoice(self) -> None:
-        """Save invoice and update inventory"""
+    def action_save_otpremnica(self) -> None:
+        """Save new otpremnica"""
+        if not self.editing_mode:
+            return
+
         invoice_number = self.query_one("#invoice-number-input", Input).value.strip()
 
         if not invoice_number:
-            self.notify("Unesite broj fakture!", severity="error")
+            self.notify("Unesite broj otpremnice!", severity="error")
             return
 
         if not self.invoice_items:
@@ -1568,12 +1756,23 @@ class InvoiceManagementScreen(Screen):
 
         if success:
             self.notify(f"✅ {message}", severity="success")
-            self.dismiss(True)
+            self.editing_mode = False
+
+            # Disable editing controls
+            self.query_one("#invoice-number-input", Input).disabled = True
+            self.query_one("#add-item-btn", Button).disabled = True
+            self.query_one("#save-btn", Button).disabled = True
+            self.query_one("#remove-item-btn", Button).disabled = True
+            self.query_one("#cancel-btn", Button).disabled = True
+
+            # Reload list
+            self.load_otpremnice_list()
+            self.invoice_items = []
         else:
             self.notify(f"❌ {message}", severity="error")
 
     def action_close(self) -> None:
-        """Close without saving"""
+        """Close screen"""
         self.dismiss(None)
 
     def handle_item_added(self, item_data) -> None:
@@ -1583,19 +1782,23 @@ class InvoiceManagementScreen(Screen):
             self.update_items_display()
 
     def update_items_display(self) -> None:
-        """Refresh items table"""
-        table = self.query_one("#invoice-items-table", DataTable)
+        """Refresh items table for new otpremnica"""
+        table = self.query_one("#items-table", DataTable)
         table.clear()
 
+        total = 0
         for item in self.invoice_items:
-            total = item['price'] * item['quantity']
+            item_total = item['price'] * item['quantity']
+            total += item_total
             table.add_row(
                 item['name'],
                 item.get('barcode') or "",
                 f"{item['price']:.2f}",
                 f"{item['quantity']:.2f}",
-                f"{total:.2f}"
+                f"{item_total:.2f}"
             )
+
+        self.update_total_label(total)
             
 
 class ReportsScreen(Screen):
@@ -3436,7 +3639,7 @@ class POSApp(App):
         Binding("f3", "inventory", "Inventory", show=True),
         Binding("f4", "reports", "Reports", show=True),
         Binding("f5", "checkout", "Checkout", show=True),
-        Binding("f6", "invoices", "Invoices", show=True),
+        Binding("f6", "otpremnice", "Otpremnice", show=True),
         Binding("f7", "sales_history", "Prodaja", show=True),
         Binding("f8", "user_management", "Users", show=True),
         Binding("f9", "logout", "Logout", show=True),
@@ -3458,11 +3661,12 @@ class POSApp(App):
         refund_repo = RefundRepository(db)
         customer_repo = CustomerRepository(db)
         unified_sales_repo = UnifiedSalesRepository(db)
+        invoice_repo = InvoiceRepository(db)
 
         self.pos = POSService(
             inv_repo,
             sales_repo,
-            InvoiceRepository(db),
+            invoice_repo,
             customer_repo,
             unified_sales_repo
         )
@@ -3475,6 +3679,7 @@ class POSApp(App):
         self.refund_service = RefundService(sales_repo, inv_repo, refund_repo)
         self.customer_repo = customer_repo
         self.unified_sales = unified_sales_repo  # Store for direct access if needed
+        self.invoice_repo = invoice_repo  # Store for otpremnice screen
 
         # Current logged in user
         self.current_user = None
@@ -3574,12 +3779,12 @@ class POSApp(App):
             SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
         )
 
-    def action_invoices(self) -> None:
-        """F6 - Invoice management (admin only)"""
-        if not self.require_admin("Prijem robe"):
+    def action_otpremnice(self) -> None:
+        """F6 - Otpremnice management (admin only)"""
+        if not self.require_admin("Otpremnice"):
             return
 
-        self.open_main_screen(InvoiceManagementScreen(self.pos))
+        self.open_main_screen(OtpremniceScreen(self.pos, self.invoice_repo))
 
     def handle_login(self, user: dict) -> None:
         """Handle successful login"""
