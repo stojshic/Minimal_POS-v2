@@ -66,6 +66,21 @@ class FiscalReceipt:
         receipt.append(f"Datum: {sale_data['timestamp']}")
         receipt.append("-" * 40)
 
+        # Customer info (if provided)
+        customer_info = sale_data.get('customer_info')
+        if customer_info:
+            receipt.append("")
+            receipt.append("KUPAC:")
+            customer_name = customer_info.get('company_name') or customer_info.get('name', '')
+            receipt.append(f"  {customer_name[:36]}")
+            if customer_info.get('address'):
+                receipt.append(f"  {customer_info['address'][:36]}")
+            tax_id_type = customer_info.get('tax_id_type', 'pib')
+            if tax_id_type == 'pib' and customer_info.get('pib'):
+                receipt.append(f"  PIB: {customer_info['pib']}")
+            elif tax_id_type == 'jmbg' and customer_info.get('jmbg'):
+                receipt.append(f"  JMBG: {customer_info['jmbg']}")
+            receipt.append("-" * 40)
 
         # Items
         receipt.append("")

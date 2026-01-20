@@ -12,11 +12,13 @@ from config import STORE_CONFIG
 @dataclass
 class PaymentInfo:
     """Payment information for sale"""
-    payment_type: str # 'cash', 'card' or 'split'
+    payment_type: str  # 'cash', 'card' or 'split'
     cash_amount: float = 0.0
     card_amount: float = 0.0
-    amount_tendered: float = 0.0 # How much customer gave (for cach)
-    change_given: float = 0.0 # Chagnge returned
+    amount_tendered: float = 0.0  # How much customer gave (for cash)
+    change_given: float = 0.0  # Change returned
+    customer_id: Optional[int] = None  # Selected customer for invoice
+    customer_tax_id_type: Optional[str] = None  # 'pib' or 'jmbg'
 
 
 @dataclass
@@ -27,6 +29,8 @@ class SaleResult:
     remaining_quantity: Optional[float] = None
     sale_id: Optional[int] = None
     payment_info: Optional['PaymentInfo'] = None
+    sale_items: Optional[List[dict]] = None  # Items in the sale for PDF
+    customer_info: Optional[dict] = None  # Customer data for PDF invoice
 
 
 @dataclass
@@ -40,13 +44,16 @@ class InvoiceItem:
 
 class POSService:
     """Main business logic service for POS operations"""
-    
-    def __init__(self, inventory_repo, sales_repo, invoice_repo, payment_repo, receipt_repo):
+
+    def __init__(self, inventory_repo, sales_repo, invoice_repo, payment_repo, receipt_repo,
+                 customer_repo=None, unified_sales_repo=None):
         self.inventory = inventory_repo
-        self.sales = sales_repo
+        self.sales = sales_repo  # Old SalesRepository (for backward compat)
         self.invoices = invoice_repo
-        self.payments = payment_repo
-        self.receipts = receipt_repo
+        self.payments = payment_repo  # Deprecated - kept for backward compat
+        self.receipts = receipt_repo  # Deprecated - kept for backward compat
+        self.customers = customer_repo
+        self.unified_sales = unified_sales_repo  # New UnifiedSalesRepository
         self.fiscal_printer = FiscalReceipt(STORE_CONFIG)
     
     def sell_item(self, item_id: int, quantity: float,
@@ -162,6 +169,7 @@ class POSService:
         # Validate all items first
         all_items_data = []
         total_amount = 0.0
+        total_vat = 0.0
 
         for cart_item in items:
             item = self.inventory.get_by_id(cart_item['id'])
@@ -180,69 +188,124 @@ class POSService:
                 )
 
             item_total = item['price'] * cart_item['quantity']
+            vat_rate = item.get('vat_rate', 0.20)
+            item_vat = item_total * vat_rate / (1 + vat_rate)
             total_amount += item_total
+            total_vat += item_vat
 
             all_items_data.append({
                 'id': item['id'],
                 'item': item['item'],
+                'item_name': item['item'],  # For unified sales
                 'price': item['price'],
+                'unit_price': item['price'],  # For unified sales
                 'quantity': cart_item['quantity'],
-                'vat_rate': item.get('vat_rate', 0.20),
+                'vat_rate': vat_rate,
+                'item_id': item['id'],  # For unified sales
                 'total': item_total
             })
 
-        # Record each sale
-        sale_ids = []
-        for item_data in all_items_data:
-            # Record sale (but don't generate receipt yet)
-            sale_id = self.sales.record_sale(
-                item=item_data['item'],
-                price=item_data['price'],
-                quantity=item_data['quantity'],
-                amount_paid=None,  # Will update for first item only
-                change_given=None
-            )
-            sale_ids.append(sale_id)
+        # Look up customer if provided
+        customer_info = None
+        if payment_info.customer_id and self.customers:
+            customer_info = self.customers.get_by_id(payment_info.customer_id)
+            if customer_info:
+                customer_info['tax_id_type'] = payment_info.customer_tax_id_type
 
-            # Update inventory
-            self.inventory.update_quantity(item_data['id'], -item_data['quantity'])
-
-        # Record payment for the transaction
-        if payment_info.payment_type == 'split':
-            self.payments.record_payment(sale_ids[0], 'cash', payment_info.cash_amount)
-            self.payments.record_payment(sale_ids[0], 'card', payment_info.card_amount)
-        else:
-            self.payments.record_payment(sale_ids[0], payment_info.payment_type, total_amount)
-
-        # Generate ONE receipt for all items
+        # Generate receipt FIRST to get receipt number
         timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
-        sale_data = {
-            'sale_id': sale_ids[0],  # Use first sale ID
-            'timestamp': timestamp,
-            'items': all_items_data,  # All items in one receipt
-            'payment_info': {
-                'payment_type': payment_info.payment_type,
-                'cash_amount': payment_info.cash_amount,
-                'card_amount': payment_info.card_amount,
-                'amount_tendered': payment_info.amount_tendered,
-                'change_given': payment_info.change_given,
-            }
-        }
+        # Use unified sales repository if available (new structure)
+        if self.unified_sales:
+            receipt_number = self.unified_sales.get_next_receipt_number()
 
-        # Generate and save receipt
-        receipt_text = self.fiscal_printer.generate_receipt(sale_data)
-        self.receipts.save_receipt(
-            sale_id=sale_ids[0],
-            receipt_number=self.fiscal_printer.receipt_counter - 1,
-            receipt_text=receipt_text
-        )
+            sale_data = {
+                'sale_id': None,  # Will be set after creation
+                'timestamp': timestamp,
+                'items': all_items_data,
+                'payment_info': {
+                    'payment_type': payment_info.payment_type,
+                    'cash_amount': payment_info.cash_amount,
+                    'card_amount': payment_info.card_amount,
+                    'amount_tendered': payment_info.amount_tendered,
+                    'change_given': payment_info.change_given,
+                },
+                'customer_info': customer_info
+            }
+
+            # Generate receipt text
+            receipt_text = self.fiscal_printer.generate_receipt(sale_data)
+
+            # Create sale with all items in one atomic transaction
+            sale_id = self.unified_sales.create_sale_with_items(
+                receipt_number=receipt_number,
+                payment_type=payment_info.payment_type,
+                total_amount=total_amount,
+                vat_amount=total_vat,
+                items=all_items_data,
+                cash_amount=payment_info.cash_amount,
+                card_amount=payment_info.card_amount,
+                amount_tendered=payment_info.amount_tendered,
+                change_given=payment_info.change_given,
+                customer_id=payment_info.customer_id,
+                receipt_text=receipt_text
+            )
+
+            # Update inventory for each item
+            for item_data in all_items_data:
+                self.inventory.update_quantity(item_data['id'], -item_data['quantity'])
+
+        else:
+            # Fallback to old structure (backward compatibility)
+            sale_ids = []
+            for item_data in all_items_data:
+                sale_id = self.sales.record_sale(
+                    item=item_data['item'],
+                    price=item_data['price'],
+                    quantity=item_data['quantity'],
+                    amount_paid=None,
+                    change_given=None
+                )
+                sale_ids.append(sale_id)
+                self.inventory.update_quantity(item_data['id'], -item_data['quantity'])
+
+            # Record payment
+            if payment_info.payment_type == 'split':
+                self.payments.record_payment(sale_ids[0], 'cash', payment_info.cash_amount)
+                self.payments.record_payment(sale_ids[0], 'card', payment_info.card_amount)
+            else:
+                self.payments.record_payment(sale_ids[0], payment_info.payment_type, total_amount)
+
+            sale_id = sale_ids[0]
+
+            sale_data = {
+                'sale_id': sale_id,
+                'timestamp': timestamp,
+                'items': all_items_data,
+                'payment_info': {
+                    'payment_type': payment_info.payment_type,
+                    'cash_amount': payment_info.cash_amount,
+                    'card_amount': payment_info.card_amount,
+                    'amount_tendered': payment_info.amount_tendered,
+                    'change_given': payment_info.change_given,
+                },
+                'customer_info': customer_info
+            }
+
+            receipt_text = self.fiscal_printer.generate_receipt(sale_data)
+            self.receipts.save_receipt(
+                sale_id=sale_id,
+                receipt_number=self.fiscal_printer.receipt_counter - 1,
+                receipt_text=receipt_text
+            )
 
         return SaleResult(
             success=True,
             message=f"Sold {len(items)} items",
-            sale_id=sale_ids[0],
-            payment_info=payment_info
+            sale_id=sale_id,
+            payment_info=payment_info,
+            sale_items=all_items_data,
+            customer_info=customer_info
         )
 
     def search_inventory(self, search_term: str = "") -> List[dict]:
@@ -469,10 +532,11 @@ class ReportService:
 class DailyReportService:
     """Service for generating daily reports"""
 
-    def __init__(self, sales_repo, payment_repo, inventory_repo):
-        self.sales = sales_repo
-        self.payments = payment_repo
+    def __init__(self, sales_repo, payment_repo, inventory_repo, unified_sales_repo=None):
+        self.sales = sales_repo  # Old SalesRepository (sold_items)
+        self.payments = payment_repo  # Deprecated
         self.inventory = inventory_repo
+        self.unified_sales = unified_sales_repo  # New UnifiedSalesRepository
 
     def generate_daily_report(self, date: str) -> dict:
         """
@@ -484,10 +548,123 @@ class DailyReportService:
         Returns:
             Dict containing all report data
         """
+        # Use unified sales if available, otherwise fall back to old structure
+        if self.unified_sales:
+            return self._generate_report_unified(date)
+        else:
+            return self._generate_report_legacy(date)
+
+    def _generate_report_unified(self, date: str) -> dict:
+        """Generate report using new unified sales table"""
+        from pos_db_layer import RefundRepository
+
+        sales_data = self.unified_sales.get_sales_with_items_by_date(date)
+        payment_summary = self.unified_sales.get_payment_summary_by_date(date)
+        refunds = RefundRepository(self.unified_sales.db).get_refunds_by_date(date)
+
+        if not sales_data and not refunds:
+            return {
+                'date': date,
+                'has_sales': False,
+                'message': 'Nema prodaje niti povraćaja za ovaj datum'
+            }
+
+        # Calculate basic stats
+        total_refunds = sum(r['refund_amount'] for r in refunds)
+        total_revenue = sum(s['sale']['total_amount'] for s in sales_data) - total_refunds
+        total_transactions = len(sales_data)
+        total_items_sold = sum(
+            sum(item['quantity'] for item in s['items'])
+            for s in sales_data
+        )
+
+        # Calculate VAT breakdown from sales table
+        vat_summary = {}
+        for sale_data in sales_data:
+            sale = sale_data['sale']
+            for item in sale_data['items']:
+                vat_rate = item.get('vat_rate', 0.20)
+                if vat_rate not in vat_summary:
+                    vat_summary[vat_rate] = {'base': 0, 'vat': 0, 'total': 0}
+
+                item_total = item['total']
+                base = item_total / (1 + vat_rate)
+                vat = item_total - base
+
+                vat_summary[vat_rate]['base'] += base
+                vat_summary[vat_rate]['vat'] += vat
+                vat_summary[vat_rate]['total'] += item_total
+
+        # Top selling items
+        item_sales = {}
+        for sale_data in sales_data:
+            for item in sale_data['items']:
+                item_name = item['item']
+                if item_name not in item_sales:
+                    item_sales[item_name] = {'quantity': 0, 'revenue': 0}
+
+                item_sales[item_name]['quantity'] += item['quantity']
+                item_sales[item_name]['revenue'] += item['total']
+
+        top_items = sorted(
+            item_sales.items(),
+            key=lambda x: x[1]['revenue'],
+            reverse=True
+        )[:10]
+
+        # Hourly breakdown
+        hourly_sales = {}
+        for sale_data in sales_data:
+            sale = sale_data['sale']
+            hour = sale['created_at'].split()[1].split(':')[0]
+
+            if hour not in hourly_sales:
+                hourly_sales[hour] = {'transactions': 0, 'revenue': 0}
+
+            hourly_sales[hour]['transactions'] += 1
+            hourly_sales[hour]['revenue'] += sale['total_amount']
+
+        avg_transaction = total_revenue / total_transactions if total_transactions > 0 else 0
+
+        # Flatten sales for detail view
+        sales_detail = []
+        for sale_data in sales_data:
+            sale = sale_data['sale']
+            for item in sale_data['items']:
+                sales_detail.append({
+                    'sale_id': sale['id'],
+                    'item': item['item'],
+                    'item_price': item['item_price'],
+                    'quantity': item['quantity'],
+                    'total': item['total'],
+                    'time': sale['created_at'],
+                    'payment_type': sale['payment_type']
+                })
+
+        return {
+            'date': date,
+            'has_sales': True,
+            'summary': {
+                'total_revenue': total_revenue,
+                'total_transactions': total_transactions,
+                'total_items_sold': total_items_sold,
+                'avg_transaction': avg_transaction,
+                'total_refunds': total_refunds,
+                'refund_count': len(refunds)
+            },
+            'payments': payment_summary,
+            'vat_breakdown': vat_summary,
+            'top_items': top_items,
+            'hourly_sales': sorted(hourly_sales.items()),
+            'sales_detail': sales_detail,
+            'refunds': refunds
+        }
+
+    def _generate_report_legacy(self, date: str) -> dict:
+        """Generate report using old sales structure (backward compatibility)"""
         sales = self.sales.get_sales_by_date(date)
         payment_summary = self.payments.get_payment_summary_by_date(date)
 
-        # Get refunds for the day
         from pos_db_layer import RefundRepository
         refunds = RefundRepository(self.sales.db).get_refunds_by_date(date)
 
@@ -582,17 +759,24 @@ class DailyReportService:
         Returns:
             Reconciliation report
         """
-        payment_summary = self.payments.get_payment_summary_by_date(date)
+        # Use unified sales if available
+        if self.unified_sales:
+            payment_summary = self.unified_sales.get_payment_summary_by_date(date)
+            sales = self.unified_sales.get_sales_by_date(date)
+            total_change_given = sum(
+                sale.get('change_given', 0) or 0
+                for sale in sales
+            )
+        else:
+            payment_summary = self.payments.get_payment_summary_by_date(date)
+            sales = self.sales.get_sales_by_date(date)
+            total_change_given = sum(
+                sale.get('change_given', 0) or 0
+                for sale in sales
+                if sale.get('change_given')
+            )
+
         expected_cash = payment_summary['cash']
-
-        # Get all cash sales to calculate change given
-        sales = self.sales.get_sales_by_date(date)
-        total_change_given = sum(
-            sale.get('change_given', 0) or 0
-            for sale in sales
-            if sale.get('change_given')
-        )
-
         difference = actual_cash_in_drawer - expected_cash
 
         return {

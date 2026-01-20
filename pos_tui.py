@@ -12,7 +12,8 @@ from time import time
 from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
     InvoiceRepository, PaymentRepository, ReceiptRepository,
-    UserRepository, RefundRepository
+    UserRepository, RefundRepository, CustomerRepository,
+    UnifiedSalesRepository
 )
 from pos_business_logic import (
         POSService, ReportService, PaymentInfo, DailyReportService, 
@@ -186,6 +187,583 @@ class LoginScreen(Screen):
             # Clear password field
             self.query_one("#password-input", Input).value = ""
             self.query_one("#password-input", Input).focus()
+
+
+class CustomerManagementScreen(Screen):
+    """Screen for managing customers"""
+    
+    CSS = """
+    CustomerManagementScreen {
+        background: $surface;
+    }
+    
+    #customer-container {
+        height: 100%;
+        padding: 1;
+    }
+    
+    #search-section {
+        height: auto;
+        margin-bottom: 1;
+    }
+    
+    #customers-table {
+        height: 1fr;
+        border: solid $primary;
+        margin-bottom: 1;
+    }
+    
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        background: $panel;
+        padding: 1;
+    }
+    """
+    
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("n", "new_customer", "New Customer"),
+        Binding("e", "edit_customer", "Edit Customer"),
+        Binding("d", "delete_customer", "Delete"),
+        Binding("i", "create_invoice", "Create Invoice"),
+    ]
+    
+    def __init__(self, customer_repo):
+        super().__init__()
+        self.customer_repo = customer_repo
+    
+    def compose(self) -> ComposeResult:
+        with Vertical(id="customer-container"):
+            yield Label("👥 UPRAVLJANJE KUPCIMA", classes="label")
+            
+            with Horizontal(id="search-section"):
+                yield Input(placeholder="Pretraga kupaca...", id="search-input")
+            
+            yield DataTable(id="customers-table")
+            
+            with Horizontal(id="controls"):
+                yield Button("Novi kupac \\[N]", id="new-btn", variant="success")
+                yield Button("Izmeni \\[E]", id="edit-btn", variant="primary")
+                yield Button("Kreiraj fakturu \\[I]", id="invoice-btn", variant="warning")
+                yield Button("Obriši \\[D]", id="delete-btn", variant="error")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+    
+    def on_mount(self) -> None:
+        """Setup table and load customers"""
+        table = self.query_one("#customers-table", DataTable)
+        table.add_columns("ID", "Ime/Kompanija", "PIB", "Telefon", "Email", "Grad")
+        table.cursor_type = "row"
+        
+        self.load_customers()
+        self.query_one("#search-input", Input).focus()
+    
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live search"""
+        if event.input.id == "search-input":
+            search_term = event.value.strip()
+            self.load_customers(search_term)
+    
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "new-btn":
+            self.action_new_customer()
+        elif event.button.id == "edit-btn":
+            self.action_edit_customer()
+        elif event.button.id == "invoice-btn":
+            self.action_create_invoice()
+        elif event.button.id == "delete-btn":
+            self.action_delete_customer()
+        elif event.button.id == "close-btn":
+            self.action_close()
+    
+    def load_customers(self, search_term: str = "") -> None:
+        """Load customers into table"""
+        table = self.query_one("#customers-table", DataTable)
+        table.clear()
+        
+        if search_term:
+            customers = self.customer_repo.search(search_term)
+        else:
+            customers = self.customer_repo.get_all()
+        
+        for customer in customers:
+            display_name = customer['company_name'] if customer['company_name'] else customer['name']
+            
+            table.add_row(
+                str(customer['id']),
+                display_name,
+                customer['pib'] or "",
+                customer['phone'] or "",
+                customer['email'] or "",
+                customer['city'] or ""
+            )
+    
+    def get_selected_customer(self) -> Optional[dict]:
+        """Get currently selected customer"""
+        table = self.query_one("#customers-table", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            customer_id = int(row[0])
+            return self.customer_repo.get_by_id(customer_id)
+        return None
+    
+    def action_new_customer(self) -> None:
+        """Create new customer"""
+        self.app.push_screen(
+            AddEditCustomerScreen(self.customer_repo),
+            self.handle_customer_changed
+        )
+    
+    def action_edit_customer(self) -> None:
+        """Edit selected customer"""
+        customer = self.get_selected_customer()
+        if customer:
+            self.app.push_screen(
+                AddEditCustomerScreen(self.customer_repo, customer),
+                self.handle_customer_changed
+            )
+        else:
+            self.notify("Izaberite kupca!", severity="warning")
+    
+    def action_delete_customer(self) -> None:
+        """Delete customer (with confirmation)"""
+        customer = self.get_selected_customer()
+        if customer:
+            display_name = customer['company_name'] if customer['company_name'] else customer['name']
+            self.app.push_screen(
+                ConfirmDialog(
+                    f"Da li ste sigurni da želite obrisati '{display_name}'?",
+                    "BRISANJE KUPCA"
+                ),
+                lambda confirmed: self.handle_delete(customer['id']) if confirmed else None
+            )
+        else:
+            self.notify("Izaberite kupca!", severity="warning")
+    
+    def handle_delete(self, customer_id: int) -> None:
+        """Actually delete customer"""
+        # TODO: Add delete method to repository
+        # For now just notify
+        self.notify("Brisanje kupaca - u izradi", severity="information")
+    
+    def action_create_invoice(self) -> None:
+        """Create invoice for selected customer"""
+        customer = self.get_selected_customer()
+        if customer:
+            self.notify("Kreiranje fakture - sledeći korak!", severity="information")
+            # We'll implement this after PDF setup
+        else:
+            self.notify("Izaberite kupca!", severity="warning")
+    
+    def action_close(self) -> None:
+        self.dismiss()
+    
+    def handle_customer_changed(self, result) -> None:
+        """Callback after customer add/edit"""
+        if result:
+            self.load_customers()
+
+
+class AddEditCustomerScreen(Screen):
+    """Screen for adding or editing customer"""
+
+    CSS = """
+    AddEditCustomerScreen {
+        align: center middle;
+    }
+
+    #customer-dialog {
+        width: 70;
+        height: 90%;
+        border: thick $success;
+        background: $surface;
+        padding: 2;
+        overflow-y: scroll;
+    }
+
+    .input-label {
+        padding: 1 0 0 0;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    #customer-type {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+
+    #company-section {
+        height: auto;
+    }
+
+    #company-section.hidden {
+        display: none;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, customer_repo, customer: Optional[dict] = None):
+        super().__init__()
+        self.customer_repo = customer_repo
+        self.customer = customer
+        self.is_edit_mode = customer is not None
+        self.is_company = customer['is_company'] if customer else False
+
+    def compose(self) -> ComposeResult:
+        title = "✏️  IZMENA KUPCA" if self.is_edit_mode else "➕ NOVI KUPAC"
+
+        # Determine initial tax ID value based on customer type
+        if self.customer:
+            if self.is_company:
+                tax_id_value = self.customer.get('pib', '')
+            else:
+                tax_id_value = self.customer.get('jmbg', '')
+        else:
+            tax_id_value = ""
+
+        with Vertical(id="customer-dialog"):
+            yield Label(title, classes="label")
+
+            yield Label("Tip kupca:", classes="input-label")
+            with Horizontal(id="customer-type"):
+                yield Button("Fizičko lice", id="person-btn", variant="primary" if not self.is_company else "default")
+                yield Button("Pravno lice", id="company-btn", variant="primary" if self.is_company else "default")
+
+            yield Label("Ime i prezime / Kontakt osoba:", classes="input-label")
+            yield Input(
+                placeholder="Puno ime...",
+                id="name-input",
+                value=self.customer['name'] if self.customer else ""
+            )
+
+            # Company name section (only visible for companies)
+            with Vertical(id="company-section", classes="" if self.is_company else "hidden"):
+                yield Label("Naziv kompanije:", classes="input-label")
+                yield Input(
+                    placeholder="Naziv firme...",
+                    id="company-input",
+                    value=self.customer['company_name'] if self.customer else ""
+                )
+
+            # Single tax ID field - label changes based on type
+            tax_label = "PIB:" if self.is_company else "JMBG:"
+            tax_placeholder = "PIB broj..." if self.is_company else "JMBG broj..."
+            yield Label(tax_label, id="tax-id-label", classes="input-label")
+            yield Input(
+                placeholder=tax_placeholder,
+                id="tax-id-input",
+                value=tax_id_value
+            )
+
+            yield Label("Adresa:", classes="input-label")
+            yield Input(
+                placeholder="Ulica i broj...",
+                id="address-input",
+                value=self.customer['address'] if self.customer else ""
+            )
+
+            yield Label("Grad:", classes="input-label")
+            yield Input(
+                placeholder="Grad...",
+                id="city-input",
+                value=self.customer['city'] if self.customer else ""
+            )
+
+            yield Label("Poštanski broj:", classes="input-label")
+            yield Input(
+                placeholder="Poštanski broj...",
+                id="postal-input",
+                value=self.customer['postal_code'] if self.customer else ""
+            )
+
+            yield Label("Telefon:", classes="input-label")
+            yield Input(
+                placeholder="Broj telefona...",
+                id="phone-input",
+                value=self.customer['phone'] if self.customer else ""
+            )
+
+            yield Label("Email:", classes="input-label")
+            yield Input(
+                placeholder="Email adresa...",
+                id="email-input",
+                value=self.customer['email'] if self.customer else ""
+            )
+
+            yield Label("Napomene:", classes="input-label")
+            yield Input(
+                placeholder="Dodatne napomene...",
+                id="notes-input",
+                value=self.customer['notes'] if self.customer else ""
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Sačuvaj", id="save-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#name-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "person-btn":
+            self.is_company = False
+            event.button.variant = "primary"
+            self.query_one("#company-btn", Button).variant = "default"
+            self._update_tax_id_field()
+
+        elif event.button.id == "company-btn":
+            self.is_company = True
+            event.button.variant = "primary"
+            self.query_one("#person-btn", Button).variant = "default"
+            self._update_tax_id_field()
+
+        elif event.button.id == "save-btn":
+            self.save_customer()
+
+        elif event.button.id == "cancel-btn":
+            self.dismiss(None)
+
+    def _update_tax_id_field(self) -> None:
+        """Update tax ID field label and placeholder based on customer type"""
+        tax_label = self.query_one("#tax-id-label", Label)
+        tax_input = self.query_one("#tax-id-input", Input)
+        company_section = self.query_one("#company-section", Vertical)
+
+        if self.is_company:
+            tax_label.update("PIB:")
+            tax_input.placeholder = "PIB broj..."
+            company_section.remove_class("hidden")
+        else:
+            tax_label.update("JMBG:")
+            tax_input.placeholder = "JMBG broj..."
+            company_section.add_class("hidden")
+
+    def save_customer(self) -> None:
+        """Save customer"""
+        name = self.query_one("#name-input", Input).value.strip()
+        company_name = self.query_one("#company-input", Input).value.strip() if self.is_company else ""
+        tax_id = self.query_one("#tax-id-input", Input).value.strip()
+        address = self.query_one("#address-input", Input).value.strip()
+        city = self.query_one("#city-input", Input).value.strip()
+        postal_code = self.query_one("#postal-input", Input).value.strip()
+        phone = self.query_one("#phone-input", Input).value.strip()
+        email = self.query_one("#email-input", Input).value.strip()
+        notes = self.query_one("#notes-input", Input).value.strip()
+
+        # Set PIB or JMBG based on customer type
+        if self.is_company:
+            pib = tax_id
+            jmbg = ""
+        else:
+            pib = ""
+            jmbg = tax_id
+
+        # Validation
+        if not name:
+            self.notify("Ime je obavezno!", severity="error")
+            return
+
+        if self.is_company and not company_name:
+            self.notify("Naziv kompanije je obavezan za pravno lice!", severity="error")
+            return
+
+        try:
+            if self.is_edit_mode:
+                # Update existing
+                success = self.customer_repo.update(
+                    customer_id=self.customer['id'],
+                    name=name,
+                    company_name=company_name,
+                    pib=pib,
+                    jmbg=jmbg,
+                    address=address,
+                    city=city,
+                    postal_code=postal_code,
+                    phone=phone,
+                    email=email,
+                    is_company=self.is_company,
+                    notes=notes
+                )
+
+                if success:
+                    self.notify("✅ Kupac ažuriran!", severity="success")
+                    self.dismiss(True)
+                else:
+                    self.notify("❌ Greška pri ažuriranju!", severity="error")
+            else:
+                # Create new
+                customer_id = self.customer_repo.create(
+                    name=name,
+                    company_name=company_name,
+                    pib=pib,
+                    jmbg=jmbg,
+                    address=address,
+                    city=city,
+                    postal_code=postal_code,
+                    phone=phone,
+                    email=email,
+                    is_company=self.is_company,
+                    notes=notes
+                )
+
+                self.notify("✅ Kupac kreiran!", severity="success")
+                self.dismiss(True)
+
+        except Exception as e:
+            self.notify(f"❌ Greška: {str(e)}", severity="error")
+
+
+class CustomerSelectScreen(Screen):
+    """Screen for selecting a customer during checkout"""
+
+    CSS = """
+    CustomerSelectScreen {
+        align: center middle;
+    }
+
+    #select-dialog {
+        width: 90;
+        height: 85%;
+        border: thick $accent;
+        background: $surface;
+        padding: 2;
+    }
+
+    #search-section {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #customers-table {
+        height: 1fr;
+        border: solid $primary;
+        margin-bottom: 1;
+    }
+
+    #controls {
+        height: auto;
+        layout: horizontal;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("enter", "select", "Select"),
+    ]
+
+    def __init__(self, customer_repo):
+        super().__init__()
+        self.customer_repo = customer_repo
+        self.customers_data = []  # Store customer data for lookup
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="select-dialog"):
+            yield Label("👤 IZABERI KUPCA ZA FAKTURU", classes="label")
+
+            with Horizontal(id="search-section"):
+                yield Input(placeholder="Pretraga kupaca...", id="search-input")
+
+            yield DataTable(id="customers-table")
+
+            with Horizontal(id="controls"):
+                yield Button("Izaberi \\[Enter]", id="select-btn", variant="success")
+                yield Button("Ukloni kupca", id="remove-btn", variant="warning")
+                yield Button("Otkazi \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        """Setup table and load customers"""
+        table = self.query_one("#customers-table", DataTable)
+        table.add_columns("ID", "Ime/Kompanija", "Tip", "ID broj", "Grad")
+        table.cursor_type = "row"
+
+        self.load_customers()
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Live search"""
+        if event.input.id == "search-input":
+            search_term = event.value.strip()
+            self.load_customers(search_term)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter in search input - select current row"""
+        if event.input.id == "search-input":
+            self.action_select()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter/double-click on table row"""
+        self.action_select()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "select-btn":
+            self.action_select()
+        elif event.button.id == "remove-btn":
+            # Return signal to remove previously selected customer
+            self.dismiss({'action': 'remove'})
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def load_customers(self, search_term: str = "") -> None:
+        """Load customers into table"""
+        table = self.query_one("#customers-table", DataTable)
+        table.clear()
+
+        if search_term:
+            self.customers_data = self.customer_repo.search(search_term)
+        else:
+            self.customers_data = self.customer_repo.get_all()
+
+        for customer in self.customers_data:
+            display_name = customer['company_name'] if customer['company_name'] else customer['name']
+            is_company = customer.get('is_company', False)
+
+            # Show type and appropriate ID
+            customer_type = "Pravno" if is_company else "Fizičko"
+            tax_id = customer.get('pib', '') if is_company else customer.get('jmbg', '')
+
+            table.add_row(
+                str(customer['id']),
+                display_name,
+                customer_type,
+                tax_id or "-",
+                customer.get('city') or ""
+            )
+
+    def action_select(self) -> None:
+        """Select current customer"""
+        table = self.query_one("#customers-table", DataTable)
+        if table.cursor_row is not None and table.cursor_row < len(self.customers_data):
+            customer = self.customers_data[table.cursor_row]
+            customer_id = customer['id']
+
+            # Automatically determine tax_id_type based on customer type
+            is_company = customer.get('is_company', False)
+            tax_id_type = "pib" if is_company else "jmbg"
+
+            # Return customer_id and tax_id_type
+            self.dismiss({
+                'customer_id': customer_id,
+                'tax_id_type': tax_id_type
+            })
+        else:
+            self.notify("Izaberite kupca iz liste!", severity="warning")
+
+    def action_cancel(self) -> None:
+        """Cancel selection"""
+        self.dismiss(None)
 
 
 class RefundsHistoryScreen(Screen):
@@ -1014,21 +1592,17 @@ class ReportsScreen(Screen):
     
     CSS = """
     ReportsScreen {
-        background: $surface;
+        align: center middle;
     }
     
-    #reports-container {
-        height: 100%;
-        padding: 1;
-    }
-    
-    #report-menu {
-        width: 40;
+    #reports-dialog {
+        width: 60;
         height: auto;
-        border: solid $primary;
+        border: thick $accent;
+        background: $surface;
         padding: 2;
-        align: center top;
     }
+    
     
     .menu-button {
         width: 100%;
@@ -1050,20 +1624,20 @@ class ReportsScreen(Screen):
         self.is_admin = is_admin
     
     def compose(self) -> ComposeResult:
-        with Vertical(id="reports-container"):
+        with Vertical(id="reports-dialog"):
             yield Label("📊 IZVEŠTAJI", classes="label")
             
-            with Vertical(id="report-menu"):
-                yield Button("1. Dnevni izveštaj", id="daily-btn", variant="primary", classes="menu-button")
-                yield Button("2. Zatvaranje kase", id="cash-btn", variant="success", classes="menu-button")
-                yield Button("3. Nisko stanje zaliha", id="stock-btn", variant="warning", classes="menu-button")
-                
-                if self.is_admin:
-                    yield Button("4. Nedeljni izveštaj", id="weekly-btn", variant="default", classes="menu-button")
-                    yield Button("5. Mesečni izveštaj", id="monthly-btn", variant="default", classes="menu-button")
-                    yield Button("6. Top artikli", id="top-btn", variant="default", classes="menu-button")
-                
-                yield Button("Zatvori \\[ESC]", id="close-btn", variant="error", classes="menu-button")
+            # with Vertical(id="report-menu"):
+            yield Button("1. Dnevni izveštaj", id="daily-btn", variant="primary", classes="menu-button")
+            yield Button("2. Zatvaranje kase", id="cash-btn", variant="success", classes="menu-button")
+            yield Button("3. Nisko stanje zaliha", id="stock-btn", variant="warning", classes="menu-button")
+            
+            if self.is_admin:
+                yield Button("4. Nedeljni izveštaj", id="weekly-btn", variant="default", classes="menu-button")
+                yield Button("5. Mesečni izveštaj", id="monthly-btn", variant="default", classes="menu-button")
+                yield Button("6. Top artikli", id="top-btn", variant="default", classes="menu-button")
+            
+            yield Button("Zatvori \\[ESC]", id="close-btn", variant="error", classes="menu-button")
     
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "daily-btn":
@@ -1107,12 +1681,15 @@ class DailyReportScreen(Screen):
     
     CSS = """
     DailyReportScreen {
-        background: $surface;
+        align: center middle;
     }
     
-    #daily-container {
-        height: 100%;
-        padding: 1;
+    #daily-dialog {
+        width: 70;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 2;
     }
     
     #report-content {
@@ -1140,7 +1717,7 @@ class DailyReportScreen(Screen):
         self.daily_reports = daily_reports
     
     def compose(self) -> ComposeResult:
-        with Vertical(id="daily-container"):
+        with Vertical(id="daily-dialog"):
             yield Label("📊 DNEVNI IZVEŠTAJ", classes="label")
             
             yield Input(
@@ -1176,71 +1753,82 @@ class DailyReportScreen(Screen):
     def load_report(self, date: str) -> None:
         """Load and display report"""
         from datetime import datetime
-        
+
         if not date:
             date = datetime.now().strftime("%Y-%m-%d")
-        
+
         report = self.daily_reports.generate_daily_report(date)
-        
+
         if not report['has_sales']:
             self.query_one("#report-content", Static).update(
                 f"\n{report['message']}"
             )
             return
-        
+
+        # Get column widths from config
+        L = CONFIG['left_side']      # Left column (labels, item names)
+        M = CONFIG['middle_side']    # Middle column (quantities)
+        R = CONFIG['right_side']     # Right column (amounts)
+        W = L + M + R                # Total width
+
         # Format report
         content = []
-        content.append("=" * 60)
-        content.append(f"DNEVNI IZVEŠTAJ ZA {date}".center(60))
-        content.append("=" * 60)
-        
+        content.append("=" * W)
+        content.append(f"DNEVNI IZVEŠTAJ ZA {date}".center(W))
+        content.append("=" * W)
+
         summary = report['summary']
-        content.append("\n📊 OSNOVNI PODACI:")
-        content.append(f"   Ukupan prihod:        {summary['total_revenue']:>12.2f} RSD")
-        content.append(f"   Broj transakcija:     {summary['total_transactions']:>12}")
-        content.append(f"   Prodato artikala:     {summary['total_items_sold']:>12.2f}")
-        content.append(f"   Prosečna transakcija: {summary['avg_transaction']:>12.2f} RSD")
-        
+        content.append(f"\n{'OSNOVNI PODACI:':^{W}}")
+        content.append(f"{'Ukupan prihod:':<{L+M}}{summary['total_revenue']:>{R-4}.2f} RSD")
+        content.append(f"{'Broj transakcija:':<{L+M}}{summary['total_transactions']:>{R}}")
+        content.append(f"{'Prodato artikala:':<{L+M}}{summary['total_items_sold']:>{R}.2f}")
+        content.append(f"{'Prosečna transakcija:':<{L+M}}{summary['avg_transaction']:>{R-4}.2f} RSD")
+
         payments = report['payments']
-        content.append("\n💳 NAČIN PLAĆANJA:")
-        content.append(f"   Gotovina:             {payments['cash']:>12.2f} RSD")
-        content.append(f"   Kartica:              {payments['card']:>12.2f} RSD")
-        content.append(f"   {'─'*40}")
-        content.append(f"   UKUPNO:               {payments['total']:>12.2f} RSD")
-        
-        content.append("\n📋 PDV REKAPITULACIJA:")
+        content.append(f"\n{'NAČIN PLAĆANJA:':^{W}}")
+        content.append(f"{'Gotovina:':<{L+M}}{payments['cash']:>{R-4}.2f} RSD")
+        content.append(f"{'Kartica:':<{L+M}}{payments['card']:>{R-4}.2f} RSD")
+        content.append(f"{'─' * R:>{W}}")
+        content.append(f"{'UKUPNO:':<{L+M}}{payments['total']:>{R-4}.2f} RSD")
+
+        content.append(f"\n{'PDV REKAPITULACIJA:':^{W}}")
+
         for vat_rate, data in report['vat_breakdown'].items():
             vat_percent = int(vat_rate * 100)
-            content.append(f"   Stopa {vat_percent}%:")
-            content.append(f"      Osnovica:          {data['base']:>12.2f} RSD")
-            content.append(f"      PDV:               {data['vat']:>12.2f} RSD")
-            content.append(f"      Ukupno:            {data['total']:>12.2f} RSD")
-        
-        content.append("\n🏆 TOP 10 ARTIKALA:")
+            content.append(f"Stopa {vat_percent}%:")
+            content.append(f"{'  Osnovica:':<{L+M}}{data['base']:>{R-4}.2f} RSD")
+            content.append(f"{'  PDV:':<{L+M}}{data['vat']:>{R-4}.2f} RSD")
+            content.append(f"{'  Ukupno:':<{L+M}}{data['total']:>{R-4}.2f} RSD")
+
+        content.append(f"\n{'TOP 10 ARTIKALA:':^{W}}")
         for i, (item_name, data) in enumerate(report['top_items'], 1):
-            content.append(f"   {i:2}. {item_name:<30} {data['quantity']:>6.0f} kom  {data['revenue']:>10.2f} RSD")
-        
-        content.append("\n⏰ PRODAJA PO SATIMA:")
+            # Truncate item name if too long (leave space for number prefix)
+            max_name_len = L - 4  # Account for "XX. " prefix
+            name = item_name[:max_name_len] if len(item_name) > max_name_len else item_name
+            content.append(f"{i:2}. {name:<{max_name_len}}{data['quantity']:>{M-4}.0f} kom{data['revenue']:>{R-4}.0f} RSD")
+
+        content.append(f"\n{'PRODAJA PO SATIMA:':^{W}}")
         for hour, data in report['hourly_sales']:
-            bar_length = int(data['revenue'] / 100)
-            bar = '█' * min(bar_length, 40)
-            content.append(f"   {hour}:00  {data['transactions']:>3} trans  {data['revenue']:>10.2f} RSD  {bar}")
-        
+            bar_length = int(data['revenue'] / 500)
+            bar = '█' * min(bar_length, W-27)
+            content.append(f"{hour}:00 {data['transactions']:>{5}} tr {bar:<{W-27}} {data['revenue']:>{7}.0f} RSD")
+
         # Show refunds if any
         if 'refunds' in report and report['refunds']:
-            content.append("\n↩️  POVRAĆAJI:")
+            content.append(f"\n{'POVRAĆAJI:':^{W}}")
             total_refunds = sum(r['refund_amount'] for r in report['refunds'])
-            content.append(f"   Broj povraćaja: {len(report['refunds'])}")
-            content.append(f"   Ukupan iznos:   {total_refunds:>12.2f} RSD")
+            content.append(f"{'Broj povraćaja:':<{L+M}}{len(report['refunds']):>{R}}")
+            content.append(f"{'Ukupan iznos:':<{L+M}}{total_refunds:>{R-4}.2f} RSD")
 
             for refund in report['refunds'][:10]:  # Show first 10
-                content.append(
-                    f"   • {refund['item']}: {refund['quantity']:.0f} kom "
-                    f"({refund['refund_amount']:.2f} RSD) - {refund['reason'] or 'Bez razloga'}"
-                )
+                reason = refund['reason'] or 'Bez razloga'
+                max_item_len = L - 2
+                item = refund['item'][:max_item_len] if len(refund['item']) > max_item_len else refund['item']
+                content.append(f"• {item:<{L-3}} {refund['quantity']:<{M-5}.0f} kom {refund['refund_amount']:>{R-4}.2f} RSD")
+                content.append(f"  {reason}")
 
-        content.append("\n" + "=" * 60)
-            
+        content.append("\n" + "=" * W)
+
         self.query_one("#report-content", Static).update("\n".join(content))
     
     def action_close(self) -> None:
@@ -1331,24 +1919,24 @@ class CashReconciliationScreen(Screen):
             reconciliation = self.daily_reports.generate_cash_reconciliation(today, actual_cash)
             
             result = []
-            result.append("=" * 50)
+            result.append("=" * 48)
             result.append("ZATVARANJE KASE")
-            result.append("=" * 50)
-            result.append(f"\nDatum: {reconciliation['date']}")
-            result.append(f"\nOčekivana gotovina:    {reconciliation['expected_cash']:>12.2f} RSD")
-            result.append(f"Prebrojana gotovina:   {actual_cash:>12.2f} RSD")
-            result.append(f"Izdati kusur:          {reconciliation['total_change_given']:>12.2f} RSD")
-            result.append("─" * 50)
+            result.append("=" * 48)
+            result.append(f"\n'Datum: {reconciliation['date']}")
+            result.append(f"\n{'Očekivana gotovina:':<32}{reconciliation['expected_cash']:>12.2f} RSD")
+            result.append(f"{'Prebrojana gotovina:':<32}{actual_cash:>12.2f} RSD")
+            result.append(f"{'Izdati kusur:':<32}{reconciliation['total_change_given']:>12.2f} RSD")
+            result.append("─" * 48)
             
             diff = reconciliation['difference']
             if reconciliation['is_balanced']:
                 result.append(f"Status: ✅ URAVNOTEŽENO")
             elif diff > 0:
-                result.append(f"Status: 🟡  VIŠAK: {diff:>12.2f} RSD")
+                result.append(f"{'Status 🟡 VIŠAK:':<31}{diff:>12.2f} RSD")
             else:
-                result.append(f"Status: ❌ MANJAK: {abs(diff):>12.2f} RSD")
+                result.append(f"{'Status ❌ MANJAK:':<31}{abs(diff):>12.2f} RSD")
             
-            result.append("=" * 50)
+            result.append("=" * 48)
             
             self.query_one("#result", Static).update("\n".join(result))
             
@@ -2160,11 +2748,25 @@ class PaymentScreen(Screen):
         margin-bottom: 1;
     }
 
-    #payment-buttons {
+    #customer-info {
+        padding: 1;
+        background: $success-darken-3;
+        margin-bottom: 1;
+    }
+
+    #customer-info.no-customer {
+        background: $panel;
+    }
+
+    #payment-buttons, #action-buttons {
         layout: horizontal;
         height: auto;
-        align: center middle;
+        align: left middle;
         padding-top: 1;
+    }
+
+    #cash-btn, #card-btn, #split-btn, #customer-btn, #cancel-btn {
+        width: 17;
     }
 
     .payment-option {
@@ -2182,16 +2784,23 @@ class PaymentScreen(Screen):
         Binding("1", "cash", "Cash"),
         Binding("2", "card", "Card"),
         Binding("3", "split", "Split"),
+        Binding("4", "select_customer", "Customer"),
     ]
 
-    def __init__(self, cart_total: float):
+    def __init__(self, cart_total: float, customer_repo=None):
         super().__init__()
         self.cart_total = cart_total
+        self.customer_repo = customer_repo
         self.payment_info = None
+        self.selected_customer_id = None
+        self.selected_tax_id_type = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="payment-dialog"):
             yield Label(f"💰 UKUPNO ZA NAPLATU: {self.cart_total:.2f} RSD", id="payment-info")
+
+            yield Static("👤 Kupac: Nije izabran", id="customer-info", classes="no-customer")
+
             yield Label("Izaberite način plaćanja:", classes="label")
 
             with Horizontal(id="payment-buttons"):
@@ -2199,7 +2808,9 @@ class PaymentScreen(Screen):
                 yield Button("Kartica \\[2]", id="card-btn", variant="primary", classes="payment-option")
                 yield Button("Kombinovano \\[3]", id="split-btn", variant="warning", classes="payment-option")
 
-            yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+            with Horizontal(id="action-buttons"):
+                yield Button("Kupac \\[4]", id="customer-btn", variant="default")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle payment method selection"""
@@ -2209,8 +2820,46 @@ class PaymentScreen(Screen):
             self.action_card()
         elif event.button.id == "split-btn":
             self.action_split()
+        elif event.button.id == "customer-btn":
+            self.action_select_customer()
         elif event.button.id == "cancel-btn":
             self.action_cancel()
+
+    def action_select_customer(self) -> None:
+        """Open customer selection screen"""
+        if self.customer_repo:
+            self.app.push_screen(
+                CustomerSelectScreen(self.customer_repo),
+                self.handle_customer_selected
+            )
+        else:
+            self.notify("Upravljanje kupcima nije dostupno", severity="error")
+
+    def handle_customer_selected(self, result) -> None:
+        """Handle customer selection result"""
+        if result:
+            # Check if this is a remove action
+            if result.get('action') == 'remove':
+                self.selected_customer_id = None
+                self.selected_tax_id_type = None
+                customer_info = self.query_one("#customer-info", Static)
+                customer_info.update("👤 Kupac: Nije izabran")
+                customer_info.add_class("no-customer")
+                return
+
+            self.selected_customer_id = result['customer_id']
+            self.selected_tax_id_type = result['tax_id_type']
+
+            # Get customer name for display
+            customer = self.customer_repo.get_by_id(self.selected_customer_id)
+            if customer:
+                display_name = customer['company_name'] if customer['company_name'] else customer['name']
+                tax_label = "PIB" if self.selected_tax_id_type == "pib" else "JMBG"
+                tax_value = customer.get(self.selected_tax_id_type) or "N/A"
+
+                customer_info = self.query_one("#customer-info", Static)
+                customer_info.update(f"👤 Kupac: {display_name} ({tax_label}: {tax_value})")
+                customer_info.remove_class("no-customer")
 
     def action_cash(self) -> None:
         """Cash payment"""
@@ -2220,7 +2869,9 @@ class PaymentScreen(Screen):
         """Card payment"""
         payment_info = PaymentInfo(
             payment_type='card',
-            card_amount=self.cart_total
+            card_amount=self.cart_total,
+            customer_id=self.selected_customer_id,
+            customer_tax_id_type=self.selected_tax_id_type
         )
         self.dismiss(payment_info)
 
@@ -2235,6 +2886,9 @@ class PaymentScreen(Screen):
     def handle_payment_result(self, payment_info: PaymentInfo) -> None:
         """Handle result from sub-screens"""
         if payment_info:
+            # Add customer info to payment
+            payment_info.customer_id = self.selected_customer_id
+            payment_info.customer_tax_id_type = self.selected_tax_id_type
             self.dismiss(payment_info)
 
 
@@ -2493,6 +3147,7 @@ class ReceiptViewerScreen(Screen):
         height: auto;
         align: center middle;
         padding-top: 1;
+        layout: horizontal;
     }
     """
 
@@ -2500,12 +3155,14 @@ class ReceiptViewerScreen(Screen):
         Binding("escape", "close", "Close"),
         Binding("enter", "close", "Close"),
         Binding("p", "print", "Print Again"),
+        Binding("f", "generate_pdf", "PDF Invoice"),
     ]
 
-    def __init__(self, receipt_text: str, sale_id: int):
+    def __init__(self, receipt_text: str, sale_id: int, sale_data: dict = None):
         super().__init__()
         self.receipt_text = receipt_text
         self.sale_id = sale_id
+        self.sale_data = sale_data  # Contains items, customer_info, payment_info
 
     def compose(self) -> ComposeResult:
         with Vertical(id="receipt-container"):
@@ -2515,12 +3172,15 @@ class ReceiptViewerScreen(Screen):
             with Horizontal(id="close-button-container"):
                 yield Button("Zatvori \\[Enter/ESC]", id="close-btn", variant="success")
                 yield Button("Štampaj ponovo \\[P]", id="print-btn", variant="primary")
+                yield Button("PDF Faktura \\[F]", id="pdf-btn", variant="warning")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-btn":
             self.action_close()
         elif event.button.id == "print-btn":
             self.action_print()
+        elif event.button.id == "pdf-btn":
+            self.action_generate_pdf()
 
     def action_close(self) -> None:
         """Close receipt viewer"""
@@ -2529,6 +3189,42 @@ class ReceiptViewerScreen(Screen):
     def action_print(self) -> None:
         """Print receipt again (future: send to printer)"""
         self.notify("Račun bi bio odštampan (u izradi)", severity="information")
+
+    def action_generate_pdf(self) -> None:
+        """Generate PDF invoice"""
+        if not self.sale_data:
+            self.notify("Podaci o prodaji nisu dostupni za PDF", severity="error")
+            return
+
+        items = self.sale_data.get('items')
+        customer_info = self.sale_data.get('customer_info')
+        payment_info = self.sale_data.get('payment_info')
+
+        if not items:
+            self.notify("Nema artikala za fakturu", severity="error")
+            return
+
+        try:
+            from pdf_invoice import PDFInvoiceGenerator
+
+            generator = PDFInvoiceGenerator()
+            filepath = generator.generate_invoice(
+                sale_id=self.sale_id,
+                items=items,
+                payment_info=payment_info or {},
+                customer_info=customer_info,
+                timestamp=self.sale_data.get('timestamp')
+            )
+
+            # Open the generated PDF
+            generator.open_pdf(filepath)
+
+            self.notify(f"PDF faktura kreirana: {filepath}", severity="success")
+
+        except ImportError:
+            self.notify("Modul za PDF nije instaliran (reportlab)", severity="error")
+        except Exception as e:
+            self.notify(f"Greška pri generisanju PDF-a: {str(e)}", severity="error")
 
 
 class QuantityInputScreen(Screen):
@@ -2725,9 +3421,11 @@ class POSApp(App):
         Binding("f4", "reports", "Reports", show=True),
         Binding("f5", "checkout", "Checkout", show=True),
         Binding("f6", "invoices", "Invoices", show=True),
-        Binding("f7", "refunds", "Refunds", show=True),
+        Binding("f7", "sales_history", "Prodaja", show=True),
         Binding("f8", "user_management", "Users", show=True),
         Binding("f9", "logout", "Logout", show=True),
+        Binding("f10", "customers", "Customers", show=True),
+        Binding("f11", "refunds", "Refunds", show=True),
         Binding("c", "clear_cart", "Clear Cart"),
         Binding("enter", "add_selected", "Add to Cart"),
         Binding("-", "remove_selected", "Remove"),
@@ -2742,24 +3440,32 @@ class POSApp(App):
         inv_repo = InventoryRepository(db)
         sales_repo = SalesRepository(db)
         payment_repo = PaymentRepository(db)
-        user_repo = UserRepository(db)  # ← NEW
+        user_repo = UserRepository(db)
         refund_repo = RefundRepository(db)
+        customer_repo = CustomerRepository(db)
+        unified_sales_repo = UnifiedSalesRepository(db)
 
         self.pos = POSService(
             inv_repo,
             sales_repo,
             InvoiceRepository(db),
             payment_repo,
-            ReceiptRepository(db)
+            ReceiptRepository(db),
+            customer_repo,
+            unified_sales_repo  # New unified sales repository
         )
 
         self.reports = ReportService(inv_repo, sales_repo)
-        self.daily_reports = DailyReportService(sales_repo, payment_repo, inv_repo)
-        self.user_service = UserService(user_repo)  # ← NEW
+        self.daily_reports = DailyReportService(
+            sales_repo, payment_repo, inv_repo, unified_sales_repo
+        )
+        self.user_service = UserService(user_repo)
         self.refund_service = RefundService(sales_repo, inv_repo, refund_repo)
+        self.customer_repo = customer_repo
+        self.unified_sales = unified_sales_repo  # Store for direct access if needed
 
         # Current logged in user
-        self.current_user = None  # ← NEW
+        self.current_user = None
 
         # Shopping cart
         self.cart = []
@@ -2790,7 +3496,7 @@ class POSApp(App):
             yield Button("Dodaj u korpu \\[Enter]", id="add-to-cart", variant="primary")
             yield Button("Ukloni \\[-]", id="remove-from-cart", variant="error")
             yield Button("Naplati \\[F5]", id="checkout", variant="success")
-            yield Button("Očistii \\[C]", id="clear-cart")
+            yield Button("Očisti \\[C]", id="clear-cart")
 
         yield Footer()
 
@@ -2825,8 +3531,22 @@ class POSApp(App):
 
         self.push_screen(UserManagementScreen(self.user_service))
 
+
+    def action_customers(self) -> None:
+        """F10 - Customer management (admin only)"""
+        if not self.require_admin("Upravljanje kupcima"):
+            return
+    
+        self.push_screen(CustomerManagementScreen(self.customer_repo))
+
+    def action_sales_history(self):
+        """F7 - Sales history view"""
+        self.push_screen(
+            SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
+        )
+
     def action_refunds(self):
-        """F7 - Returns and refunds"""
+        """F11 - Returns and refunds"""
         self.push_screen(
             RefundsScreen(self.pos, self.refund_service, self.current_user)
         )
@@ -3187,7 +3907,7 @@ class POSApp(App):
 
         elif event.button.id == "checkout":
             if self.cart:
-                self.push_screen(PaymentScreen(self.cart_total), self.handle_checkout)
+                self.push_screen(PaymentScreen(self.cart_total, self.customer_repo), self.handle_checkout)
             else:
                 self.notify("Korpa je prazna!", severity="warning")
 
@@ -3229,9 +3949,28 @@ class POSApp(App):
                 receipt_data = self.pos.receipts.get_receipt_by_sale_id(last_sale_id)
 
                 if receipt_data:
-                    # Show receipt viewer
+                    # Prepare sale_data for PDF generation
+                    from datetime import datetime
+                    sale_data = {
+                        'items': result.sale_items,
+                        'customer_info': result.customer_info,
+                        'payment_info': {
+                            'payment_type': payment_info.payment_type,
+                            'cash_amount': payment_info.cash_amount,
+                            'card_amount': payment_info.card_amount,
+                            'amount_tendered': payment_info.amount_tendered,
+                            'change_given': payment_info.change_given,
+                        },
+                        'timestamp': datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                    }
+
+                    # Show receipt viewer with sale_data for PDF
                     self.push_screen(
-                        ReceiptViewerScreen(receipt_data['receipt_text'], last_sale_id),
+                        ReceiptViewerScreen(
+                            receipt_data['receipt_text'],
+                            last_sale_id,
+                            sale_data
+                        ),
                         self.after_receipt_shown
                     )
                 else:
@@ -3293,7 +4032,10 @@ class POSApp(App):
     def action_checkout(self) -> None:
         """F5 - Checkout"""
         if self.cart:
-            self.push_screen(PaymentScreen(self.cart_total), self.handle_checkout)
+            self.push_screen(
+                PaymentScreen(self.cart_total, self.customer_repo),
+                self.handle_checkout
+            )
         else:
             self.notify("Korpa je prazna!", severity="warning")
 
@@ -3323,9 +4065,285 @@ class POSApp(App):
             self.notify(f"Uklonjeno: {removed['item']}")
 
 
+class SalesHistoryScreen(Screen):
+    """Screen for viewing sales history with split-panel layout"""
+
+    CSS = """
+        SalesHistoryScreen {
+            background: $surface;
+        }
+
+        #sales-history-container {
+            height: 100%;
+            padding: 1;
+        }
+
+        #date-section {
+            height: auto;
+            background: $panel;
+            padding: 1;
+            margin-bottom: 1;
+        }
+
+        #date-row {
+            layout: horizontal;
+            height: auto;
+        }
+
+        #panels-container {
+            height: 1fr;
+            layout: horizontal;
+        }
+
+        #left-panel {
+            width: 30%;
+            border: solid $primary;
+            margin-right: 1;
+        }
+
+        #right-panel {
+            width: 70%;
+            border: solid $secondary;
+        }
+
+        #receipts-table {
+            height: 100%;
+        }
+
+        #items-table {
+            height: 100%;
+        }
+
+        #controls {
+            dock: bottom;
+            height: auto;
+            layout: horizontal;
+            background: $panel;
+            padding: 1;
+        }
+
+        .panel-header {
+            background: $primary;
+            color: $text;
+            padding: 0 1;
+            text-style: bold;
+        }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("r", "refund", "Povraćaj"),
+        Binding("p", "print_receipt", "Štampaj"),
+        Binding("tab", "switch_panel", "Promeni panel"),
+    ]
+
+    def __init__(self, unified_sales_repo, refund_service=None, current_user=None):
+        super().__init__()
+        self.unified_sales = unified_sales_repo
+        self.refund_service = refund_service
+        self.current_user = current_user
+        self.selected_sale_id = None
+        self.current_sales = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sales-history-container"):
+            yield Label("📋 PREGLED PRODAJE", classes="label")
+
+            with Vertical(id="date-section"):
+                yield Label("Pretraga prodaje:")
+                with Horizontal(id="date-row"):
+                    yield Input(
+                        placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
+                        id="date-input"
+                    )
+                    yield Button("Pretraži", id="search-btn", variant="primary")
+
+            with Horizontal(id="panels-container"):
+                with Vertical(id="left-panel"):
+                    yield Static("Računi", classes="panel-header")
+                    yield DataTable(id="receipts-table")
+
+                with Vertical(id="right-panel"):
+                    yield Static("Stavke računa", classes="panel-header", id="items-header")
+                    yield DataTable(id="items-table")
+
+            with Horizontal(id="controls"):
+                yield Button("Povraćaj \\[R]", id="refund-btn", variant="warning")
+                yield Button("Štampaj \\[P]", id="print-btn", variant="default")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+
+    def on_mount(self) -> None:
+        """Setup tables and load today's sales"""
+        from datetime import datetime
+
+        # Setup receipts table (left panel)
+        receipts_table = self.query_one("#receipts-table", DataTable)
+        receipts_table.add_columns("Račun", "Vreme", "Ukupno")
+        receipts_table.cursor_type = "row"
+
+        # Setup items table (right panel)
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.add_columns("Artikal", "Kol.", "Cena", "Ukupno")
+        items_table.cursor_type = "row"
+
+        # Load today's sales
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = today
+        self.load_sales(today)
+
+    def load_sales(self, date: str) -> None:
+        """Load sales for the given date"""
+        receipts_table = self.query_one("#receipts-table", DataTable)
+        receipts_table.clear()
+
+        try:
+            self.current_sales = self.unified_sales.get_sales_with_items_by_date(date)
+
+            if not self.current_sales:
+                self.notify("Nema prodaje za ovaj datum", severity="warning")
+                self.clear_items_table()
+                return
+
+            for sale_data in self.current_sales:
+                sale = sale_data['sale']
+                time_str = sale['created_at'].split()[1][:5] if sale['created_at'] else ""
+                receipts_table.add_row(
+                    f"#{sale['receipt_number']}",
+                    time_str,
+                    f"{sale['total_amount']:.2f}",
+                    key=str(sale['id'])
+                )
+
+            # Select first row
+            if self.current_sales:
+                receipts_table.move_cursor(row=0)
+                self.show_sale_items(self.current_sales[0])
+
+        except Exception as e:
+            self.notify(f"Greška: {e}", severity="error")
+
+    def show_sale_items(self, sale_data: dict) -> None:
+        """Display items for the selected sale"""
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.clear()
+
+        sale = sale_data['sale']
+        items = sale_data['items']
+
+        self.selected_sale_id = sale['id']
+
+        # Update header
+        header = self.query_one("#items-header", Static)
+        header.update(f"Stavke računa #{sale['receipt_number']}")
+
+        for item in items:
+            items_table.add_row(
+                item['item'],
+                f"{item['quantity']:.2f}",
+                f"{item['item_price']:.2f}",
+                f"{item['total']:.2f}"
+            )
+
+    def clear_items_table(self) -> None:
+        """Clear the items table"""
+        items_table = self.query_one("#items-table", DataTable)
+        items_table.clear()
+        self.selected_sale_id = None
+
+        header = self.query_one("#items-header", Static)
+        header.update("Stavke računa")
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle row selection in receipts table"""
+        if event.data_table.id == "receipts-table":
+            # Find the sale data for this row
+            row_key = event.row_key.value if event.row_key else None
+            if row_key:
+                for sale_data in self.current_sales:
+                    if str(sale_data['sale']['id']) == row_key:
+                        self.show_sale_items(sale_data)
+                        break
+
+    def on_data_table_cursor_changed(self, event) -> None:
+        """Handle cursor change in receipts table"""
+        table = event.data_table
+        if table.id == "receipts-table" and table.row_count > 0:
+            row_key = table.get_row_at(table.cursor_row)
+            # Get the key from the row
+            try:
+                keys = list(table._row_locations.keys())
+                if table.cursor_row < len(keys):
+                    row_key_obj = keys[table.cursor_row]
+                    sale_id = row_key_obj.value if hasattr(row_key_obj, 'value') else str(row_key_obj)
+                    for sale_data in self.current_sales:
+                        if str(sale_data['sale']['id']) == sale_id:
+                            self.show_sale_items(sale_data)
+                            break
+            except:
+                pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "search-btn":
+            date = self.query_one("#date-input", Input).value.strip()
+            if not date:
+                from datetime import datetime
+                date = datetime.now().strftime("%Y-%m-%d")
+            self.load_sales(date)
+        elif event.button.id == "close-btn":
+            self.action_close()
+        elif event.button.id == "refund-btn":
+            self.action_refund()
+        elif event.button.id == "print-btn":
+            self.action_print_receipt()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle Enter key in date input"""
+        if event.input.id == "date-input":
+            date = event.value.strip()
+            if not date:
+                from datetime import datetime
+                date = datetime.now().strftime("%Y-%m-%d")
+                event.input.value = date
+            self.load_sales(date)
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def action_switch_panel(self) -> None:
+        """Switch focus between panels"""
+        receipts = self.query_one("#receipts-table", DataTable)
+        items = self.query_one("#items-table", DataTable)
+
+        if receipts.has_focus:
+            items.focus()
+        else:
+            receipts.focus()
+
+    def action_refund(self) -> None:
+        """Process refund for selected sale"""
+        if not self.selected_sale_id:
+            self.notify("Izaberite račun za povraćaj", severity="warning")
+            return
+        # TODO: Open refund dialog for the selected sale
+        self.notify(f"Povraćaj za račun #{self.selected_sale_id} - funkcija u izradi")
+
+    def action_print_receipt(self) -> None:
+        """Print receipt for selected sale"""
+        if not self.selected_sale_id:
+            self.notify("Izaberite račun za štampanje", severity="warning")
+            return
+
+        sale = self.unified_sales.get_by_id(self.selected_sale_id)
+        if sale and sale.get('receipt_text'):
+            self.notify(f"Štampanje računa #{sale['receipt_number']}...")
+            # TODO: Actually print or show receipt
+        else:
+            self.notify("Račun nema tekst za štampanje", severity="warning")
+
+
 class RefundsScreen(Screen):
     """Screen for processing returns and refunds"""
-    
+
     CSS = """
         RefundsScreen {
             background: $surface;

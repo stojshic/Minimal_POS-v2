@@ -20,8 +20,11 @@ VAT_RATES = {
 
 # POS System Configuration
 CONFIG = {
-    "low_stock_threshold": 10.0,  # Items below this trigger warnings
-    "allow_oversell": True,  # Allow selling items with negative stock
+    "low_stock_threshold": 10.0,     # Items below this trigger warnings
+    "allow_oversell": True,          # Allow selling items with negative stock
     "show_low_stock_banner": False,  # Show persistent low stock banner
     "auto_print_receipt": False,  # Automatically print to printer (not implemented yet)
+    "left_side": 23,    # For 42-char printers: left_side: 20, middle_side: 8, right_side: 14
+    "middle_side": 9,   # For 48-char printers: left_side: 23, middle_side: 9, right_side: 16
+    "right_side": 16,   # For 56-char printers: left_side: 28, middle_side: 10, right_side: 18
 }

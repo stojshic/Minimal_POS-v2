@@ -2,3 +2,4 @@ textual
 pandas
 qrcode
 pillow
+reportlab
