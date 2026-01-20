@@ -28,14 +28,16 @@
 - [x] Ensure Sales screen (F2 Prodaja) is shown after any user logs in
 - [x] Test with different user roles
 
-## Time Zone Bug
-- [ ] Investigate -1 hour time offset on sales
-- [ ] Example: Sale at 23:23 saves as 22:23
-- [ ] Check datetime handling in:
-  - [ ] `pos_business_logic.py` (sell_items, timestamps)
-  - [ ] `pos_db_layer.py` (database storage)
-  - [ ] `receipt_printer.py` (receipt generation)
-- [ ] Fix timezone/UTC conversion issue
+## Time Zone Bug ✅ DONE
+- [x] Investigate -1 hour time offset on sales
+- [x] Example: Sale at 23:23 saves as 22:23
+- [x] Check datetime handling in:
+  - [x] `pos_business_logic.py` (sell_items, timestamps) - uses local time correctly
+  - [x] `pos_db_layer.py` (database storage) - was using SQLite CURRENT_TIMESTAMP (UTC)
+  - [x] `receipt_printer.py` (receipt generation) - uses local time correctly
+- [x] Fix timezone/UTC conversion issue
+  - Root cause: SQLite's CURRENT_TIMESTAMP defaults to UTC
+  - Fix: Explicitly pass local time to create_sale and create_sale_with_items
 
 ## Inventory Screen - Full Article Editing
 - [ ] Currently only price changes are saved

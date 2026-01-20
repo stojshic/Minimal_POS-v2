@@ -935,17 +935,20 @@ class UnifiedSalesRepository:
         notes: Optional[str] = None
     ) -> int:
         """Create a new sale record"""
+        # Use local time instead of UTC (SQLite CURRENT_TIMESTAMP uses UTC)
+        local_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO sales
                    (receipt_number, customer_id, invoice_number, payment_type,
                     cash_amount, card_amount, amount_tendered, change_given,
-                    total_amount, vat_amount, receipt_text, cashier_id, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    total_amount, vat_amount, receipt_text, cashier_id, notes, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (receipt_number, customer_id, invoice_number, payment_type,
                  cash_amount, card_amount, amount_tendered, change_given,
-                 total_amount, vat_amount, receipt_text, cashier_id, notes)
+                 total_amount, vat_amount, receipt_text, cashier_id, notes, local_time)
             )
             return cursor.lastrowid
 
@@ -1111,6 +1114,9 @@ class UnifiedSalesRepository:
         Returns:
             sale_id of the created sale
         """
+        # Use local time instead of UTC (SQLite CURRENT_TIMESTAMP uses UTC)
+        local_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
 
@@ -1119,11 +1125,11 @@ class UnifiedSalesRepository:
                 """INSERT INTO sales
                    (receipt_number, customer_id, invoice_number, payment_type,
                     cash_amount, card_amount, amount_tendered, change_given,
-                    total_amount, vat_amount, receipt_text, cashier_id, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    total_amount, vat_amount, receipt_text, cashier_id, notes, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (receipt_number, customer_id, invoice_number, payment_type,
                  cash_amount, card_amount, amount_tendered, change_given,
-                 total_amount, vat_amount, receipt_text, cashier_id, notes)
+                 total_amount, vat_amount, receipt_text, cashier_id, notes, local_time)
             )
             sale_id = cursor.lastrowid
 
