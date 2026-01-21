@@ -1786,6 +1786,13 @@ class CustomerRepository:
             )
             return cursor.rowcount > 0
 
+    def delete(self, customer_id: int) -> bool:
+        """Delete customer by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
+            return cursor.rowcount > 0
+
 
 class CustomerInvoiceRepository:
     """

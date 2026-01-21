@@ -348,9 +348,11 @@ class CustomerManagementScreen(Screen):
     
     def handle_delete(self, customer_id: int) -> None:
         """Actually delete customer"""
-        # TODO: Add delete method to repository
-        # For now just notify
-        self.notify("Brisanje kupaca - u izradi", severity="information")
+        if self.customer_repo.delete(customer_id):
+            self.notify("Kupac obrisan!", severity="success")
+            self.load_customers()
+        else:
+            self.notify("Greška pri brisanju!", severity="error")
     
     def action_create_invoice(self) -> None:
         """Create invoice for selected customer"""
