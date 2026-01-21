@@ -39,14 +39,15 @@
   - Root cause: SQLite's CURRENT_TIMESTAMP defaults to UTC
   - Fix: Explicitly pass local time to create_sale and create_sale_with_items
 
-## Inventory Screen - Full Article Editing
-- [ ] Currently only price changes are saved
-- [ ] Implement editing for:
-  - [ ] Barcode
-  - [ ] Item name
-  - [ ] PDV (VAT rate)
-- [ ] Update `UpdateItemScreen` or create comprehensive edit dialog
-- [ ] Update repository methods if needed
+## Inventory Screen - Full Article Editing ✅ DONE
+- [x] Currently only price changes are saved
+- [x] Implement editing for:
+  - [x] Barcode
+  - [x] Item name
+  - [x] PDV (VAT rate)
+- [x] Update `AddEditItemScreen` to use comprehensive `update_item` method
+- [x] Add `update_item` method to InventoryRepository (updates all fields)
+- [x] Update `add` method to accept vat_rate parameter
 
 ## VAT Implementation Audit
 - [ ] Audit VAT implementation across the entire application

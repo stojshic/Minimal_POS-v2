@@ -1404,27 +1404,17 @@ class AddEditItemScreen(Screen):
 
         try:
             if self.is_edit_mode:
-                # Update existing item
-                # We need to add an update method that handles all fields
+                # Update existing item - all fields including name, barcode, VAT
                 item_id = self.item['id']
-
-                # Update price
-                self.pos_service.inventory.update_price(item_id, price)
-
-                # Update quantity (delta from current)
-                current_qty = self.item['quantity']
-                qty_delta = quantity - current_qty
-                self.pos_service.inventory.update_quantity(item_id, qty_delta)
-
-                # TODO: Update name, barcode, VAT rate (need to add method)
-
+                self.pos_service.inventory.update_item(
+                    item_id, name, barcode, price, quantity, self.selected_vat
+                )
                 self.notify(f"✅ Artikal '{name}' ažuriran!", severity="success")
             else:
-                # Add new item
-                item_id = self.pos_service.inventory.add(name, price, quantity, barcode)
-
-                # TODO: Set VAT rate (need to add method)
-
+                # Add new item with VAT rate
+                item_id = self.pos_service.inventory.add(
+                    name, price, quantity, barcode, self.selected_vat
+                )
                 self.notify(f"✅ Artikal '{name}' dodat!", severity="success")
 
             self.dismiss(True)

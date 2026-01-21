@@ -746,14 +746,15 @@ class InventoryRepository:
         """Get all inventory items"""
         return self.search("")
     
-    def add(self, item: str, price: float, quantity: float, barcode: Optional[str] = None) -> int:
+    def add(self, item: str, price: float, quantity: float, barcode: Optional[str] = None,
+            vat_rate: float = 0.20) -> int:
         """Add new inventory item"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO inventory (item, barcode, price, quantity) 
-                   VALUES (?, ?, ?, ?)""",
-                (item, barcode, price, quantity)
+                """INSERT INTO inventory (item, barcode, price, quantity, vat_rate)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (item, barcode, price, quantity, vat_rate)
             )
             return cursor.lastrowid
     
@@ -788,12 +789,30 @@ class InventoryRepository:
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """UPDATE inventory 
+                """UPDATE inventory
                    SET price = ?,
                        quantity = quantity + ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
                 (price, quantity_delta, item_id)
+            )
+            return cursor.rowcount > 0
+
+    def update_item(self, item_id: int, name: str, barcode: Optional[str],
+                    price: float, quantity: float, vat_rate: float) -> bool:
+        """Update all fields of an inventory item"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE inventory
+                   SET item = ?,
+                       barcode = ?,
+                       price = ?,
+                       quantity = ?,
+                       vat_rate = ?,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (name, barcode, price, quantity, vat_rate, item_id)
             )
             return cursor.rowcount > 0
 
