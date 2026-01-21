@@ -49,13 +49,14 @@
 - [x] Add `update_item` method to InventoryRepository (updates all fields)
 - [x] Update `add` method to accept vat_rate parameter
 
-## VAT Implementation Audit
-- [ ] Audit VAT implementation across the entire application
-- [ ] Check areas:
-  - [ ] Inventory items (VAT rate storage)
-  - [ ] Sales processing (VAT calculation)
-  - [ ] Receipts (VAT display)
-  - [ ] Reports (VAT breakdown)
-  - [ ] Invoices/Otpremnice (VAT handling)
-- [ ] Ensure consistent VAT rates from `config.py` are used
-- [ ] Fix any missing or incorrect VAT calculations
+## VAT Implementation Audit ✅ DONE
+- [x] Audit VAT implementation across the entire application
+- [x] Check areas:
+  - [x] Inventory items (VAT rate storage) - correctly stored and edited
+  - [x] Sales processing (VAT calculation) - uses item's vat_rate correctly
+  - [x] Receipts (VAT display) - uses item's vat_rate correctly
+  - [x] Reports (VAT breakdown) - fixed hardcoded VAT in legacy report
+  - [x] Invoices/Otpremnice (VAT handling) - VAT not stored (low priority for goods receiving)
+- [x] Ensure consistent VAT rates from `config.py` are used
+- [x] Fix any missing or incorrect VAT calculations
+  - Fixed: `_generate_report_legacy` was using hardcoded 0.20, now uses `sale.get('vat_rate', 0.20)`

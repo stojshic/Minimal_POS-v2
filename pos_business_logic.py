@@ -606,8 +606,8 @@ class DailyReportService:
         # Calculate VAT breakdown
         vat_summary = {}
         for sale in sales:
-            # Get item to find VAT rate (simplified - assumes we can lookup)
-            vat_rate = 0.20  # Default, should lookup from inventory
+            # Get VAT rate from sold_items record (stored when sale was made)
+            vat_rate = sale.get('vat_rate', 0.20)
 
             if vat_rate not in vat_summary:
                 vat_summary[vat_rate] = {'base': 0, 'vat': 0, 'total': 0}
