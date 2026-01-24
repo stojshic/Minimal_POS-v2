@@ -1169,34 +1169,58 @@ class UnifiedSalesRepository:
     def get_payment_summary_by_date(self, date: str) -> Dict[str, float]:
         """
         Get payment totals by type for a date (replaces PaymentRepository method)
+        Accounts for refunds - subtracts refund amounts from totals.
 
         Args:
             date: Date in format 'YYYY-MM-DD'
 
         Returns:
-            Dict with 'cash', 'card' and 'total' amounts
+            Dict with 'cash', 'card', 'total', 'refunds_cash', 'refunds_card' amounts
         """
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
+
+            # Get sales totals
             cursor.execute(
                 """SELECT
-                        payment_type,
                         SUM(cash_amount) as cash_total,
                         SUM(card_amount) as card_total,
                         SUM(total_amount) as total
                    FROM sales
-                   WHERE DATE(created_at) = ?
-                   GROUP BY payment_type""",
+                   WHERE DATE(created_at) = ?""",
                 (date,)
             )
 
-            results = cursor.fetchall()
-            summary = {'cash': 0.0, 'card': 0.0, 'total': 0.0}
+            row = cursor.fetchone()
+            summary = {
+                'cash': row['cash_total'] or 0.0,
+                'card': row['card_total'] or 0.0,
+                'total': row['total'] or 0.0,
+                'refunds_cash': 0.0,
+                'refunds_card': 0.0
+            }
 
-            for row in results:
-                summary['cash'] += row['cash_total'] or 0
-                summary['card'] += row['card_total'] or 0
-                summary['total'] += row['total'] or 0
+            # Get refunds and subtract from totals
+            cursor.execute(
+                """SELECT refund_method, SUM(refund_amount) as refund_total
+                   FROM refunds
+                   WHERE DATE(created_at) = ?
+                   GROUP BY refund_method""",
+                (date,)
+            )
+
+            for refund_row in cursor.fetchall():
+                method = refund_row['refund_method']
+                amount = refund_row['refund_total'] or 0
+
+                if method == 'cash':
+                    summary['refunds_cash'] = amount
+                    summary['cash'] -= amount
+                elif method == 'card':
+                    summary['refunds_card'] = amount
+                    summary['card'] -= amount
+
+                summary['total'] -= amount
 
             return summary
 
@@ -1241,16 +1265,19 @@ class UnifiedSalesRepository:
     def get_payment_summary_between_dates(self, start_date: str, end_date: str) -> Dict[str, float]:
         """
         Get payment totals by type between two dates (inclusive)
+        Accounts for refunds - subtracts refund amounts from totals.
 
         Args:
             start_date: Start date 'YYYY-MM-DD'
             end_date: End date 'YYYY-MM-DD'
 
         Returns:
-            Dict with 'cash', 'card' and 'total' amounts
+            Dict with 'cash', 'card', 'total', 'refunds_cash', 'refunds_card' amounts
         """
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
+
+            # Get sales totals
             cursor.execute(
                 """SELECT
                         SUM(cash_amount) as cash_total,
@@ -1262,11 +1289,37 @@ class UnifiedSalesRepository:
             )
 
             row = cursor.fetchone()
-            return {
+            summary = {
                 'cash': row['cash_total'] or 0.0,
                 'card': row['card_total'] or 0.0,
-                'total': row['total'] or 0.0
+                'total': row['total'] or 0.0,
+                'refunds_cash': 0.0,
+                'refunds_card': 0.0
             }
+
+            # Get refunds and subtract from totals
+            cursor.execute(
+                """SELECT refund_method, SUM(refund_amount) as refund_total
+                   FROM refunds
+                   WHERE DATE(created_at) BETWEEN ? AND ?
+                   GROUP BY refund_method""",
+                (start_date, end_date)
+            )
+
+            for refund_row in cursor.fetchall():
+                method = refund_row['refund_method']
+                amount = refund_row['refund_total'] or 0
+
+                if method == 'cash':
+                    summary['refunds_cash'] = amount
+                    summary['cash'] -= amount
+                elif method == 'card':
+                    summary['refunds_card'] = amount
+                    summary['card'] -= amount
+
+                summary['total'] -= amount
+
+            return summary
 
     def get_daily_totals_between_dates(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         """
