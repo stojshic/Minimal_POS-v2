@@ -4041,20 +4041,20 @@ class POSApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
-        Binding("f1", "show_help", "Help", show=True),
-        Binding("f2", "sales", "Sales", show=True),
-        Binding("f3", "inventory", "Inventory", show=True),
-        Binding("f4", "reports", "Reports", show=True),
-        Binding("f5", "checkout", "Checkout", show=True),
+        Binding("f1", "show_help", "Pomoć", show=True),
+        Binding("f2", "sales", "Prodaja", show=True),
+        Binding("f3", "inventory", "Inventar", show=True),
+        Binding("f4", "reports", "Izveštaji", show=True),
+        Binding("f5", "checkout", "Naplati", show=True),
         Binding("f6", "otpremnice", "Otpremnice", show=True),
-        Binding("f7", "sales_history", "Prodaja", show=True),
-        Binding("f8", "user_management", "Users", show=True),
-        Binding("f9", "logout", "Logout", show=True),
-        Binding("f10", "customers", "Customers", show=True),
-        Binding("c", "clear_cart", "Clear Cart"),
-        Binding("enter", "add_selected", "Add to Cart"),
-        Binding("-", "remove_selected", "Remove"),
-        Binding("e", "edit_quantity", "Edit Qty")
+        Binding("f7", "sales_history", "Prethodni račini", show=True),
+        Binding("f8", "user_management", "Korisnici", show=True),
+        Binding("f9", "logout", "Izlaz", show=True),
+        Binding("f10", "customers", "Kupci", show=True),
+        Binding("c", "clear_cart", "Očisti korpu"),
+        Binding("enter", "add_selected", "Ubaci u korpu"),
+        Binding("-", "remove_selected", "Izbaci artikal"),
+        Binding("e", "edit_quantity", "Izmeni količinu")
     ]
 
     def __init__(self):
@@ -4998,17 +4998,89 @@ class SalesHistoryScreen(Screen):
                 self.load_sales(date)
 
     def action_print_receipt(self) -> None:
-        """Print receipt for selected sale"""
+        """Print receipt for selected sale (reprint)"""
         if not self.selected_sale_id:
             self.notify("Izaberite račun za štampanje", severity="warning")
             return
 
-        sale = self.unified_sales.get_by_id(self.selected_sale_id)
-        if sale and sale.get('receipt_text'):
-            self.notify(f"Štampanje računa #{sale['receipt_number']}...")
-            # TODO: Actually print or show receipt
+        # Get sale with items
+        sale_data = self.unified_sales.get_sale_with_items(self.selected_sale_id)
+        if not sale_data:
+            self.notify("Greška: Račun nije pronađen", severity="error")
+            return
+
+        sale = sale_data['sale']
+        items = sale_data['items']
+
+        # Get customer info if exists
+        customer_info = None
+        if sale.get('customer_id'):
+            from pos_db_layer import CustomerRepository
+            customer_repo = CustomerRepository(self.unified_sales.db)
+            customer_info = customer_repo.get_by_id(sale['customer_id'])
+
+        # Build receipt text - either from stored or regenerate
+        if sale.get('receipt_text'):
+            # Add reprint header to stored receipt
+            reprint_header = [
+                "=" * 40,
+                "*** PONOVLJEN RAČUN ***".center(40),
+                "=" * 40,
+                ""
+            ]
+            receipt_text = "\n".join(reprint_header) + sale['receipt_text']
         else:
-            self.notify("Račun nema tekst za štampanje", severity="warning")
+            # Regenerate receipt if not stored
+            from receipt_printer import FiscalReceipt
+            from config import STORE_CONFIG
+
+            printer = FiscalReceipt(STORE_CONFIG)
+            printer.receipt_counter = sale['receipt_number']
+
+            # Prepare items for receipt
+            receipt_items = [{
+                'item': item['item'],
+                'price': item['item_price'],
+                'quantity': item['quantity'],
+                'vat_rate': item.get('vat_rate', 0.20)
+            } for item in items]
+
+            # Prepare payment info
+            payment_info = {
+                'payment_type': sale['payment_type'],
+                'cash_amount': sale.get('cash_amount', 0),
+                'card_amount': sale.get('card_amount', 0),
+                'amount_tendered': sale.get('amount_tendered', 0),
+                'change_given': sale.get('change_given', 0)
+            }
+
+            receipt_data = {
+                'items': receipt_items,
+                'payment_info': payment_info,
+                'sale_id': sale['id'],
+                'timestamp': sale['created_at'],
+                'customer_info': customer_info
+            }
+
+            receipt_text = "*** PONOVLJEN RAČUN ***\n\n" + printer.generate_receipt(receipt_data)
+
+        # Prepare sale_data for ReceiptViewerScreen
+        viewer_sale_data = {
+            'items': items,
+            'customer_info': customer_info,
+            'payment_info': {
+                'payment_type': sale['payment_type'],
+                'cash_amount': sale.get('cash_amount', 0),
+                'card_amount': sale.get('card_amount', 0),
+                'amount_tendered': sale.get('amount_tendered', 0),
+                'change_given': sale.get('change_given', 0)
+            }
+        }
+
+        # Show receipt
+        self.app.push_screen(
+            ReceiptViewerScreen(receipt_text, sale['id'], viewer_sale_data)
+        )
 
 
 class RefundSaleScreen(Screen):
@@ -5065,8 +5137,8 @@ class RefundSaleScreen(Screen):
 
     BINDINGS = [
         Binding("escape", "close", "Zatvori"),
-        Binding("a", "refund_all", "Ceo račun"),
-        Binding("r", "refund_item", "Stavku"),
+        Binding("r", "refund_all", "Računa"),
+        Binding("s", "refund_item", "Stavke"),
     ]
 
     def __init__(self, sale_id: int, unified_sales_repo, refund_service, current_user):
@@ -5089,8 +5161,8 @@ class RefundSaleScreen(Screen):
                 yield DataTable(id="items-table")
 
             with Horizontal(id="controls"):
-                yield Button("Povraćaj ceo račun \\[A]", id="refund-all-btn", variant="error")
-                yield Button("Povraćaj stavku \\[R]", id="refund-item-btn", variant="warning")
+                yield Button("Povraćaj računa \\[R]", id="refund-all-btn", variant="error")
+                yield Button("Povraćaj stavke \\[S]", id="refund-item-btn", variant="warning")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
         yield Footer()
 
@@ -5580,7 +5652,7 @@ class RefundConfirmScreen(Screen):
             self.dismiss(True)
 
 
-class RefundsScreen(Screen):
+class eefundsScreen(Screen):
     """Screen for processing returns and refunds"""
 
     CSS = """
