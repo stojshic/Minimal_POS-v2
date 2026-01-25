@@ -54,12 +54,13 @@
 - [ ] `OrderTicketScreen` to display ticket before "printing"
 
 ## Phase 6: Table Management (Admin)
-- [ ] Create `TableManagementScreen` (admin only)
-  - [ ] Add/edit/delete tables
-  - [ ] Set table positions (row, col) for grid layout
-  - [ ] Set capacity (optional, for future reservations)
-  - [ ] Activate/deactivate tables
-- [ ] Add F-key binding for table management (admin only)
+- [x] Create `TableManagementScreen` (admin only)
+  - [x] Add/edit/delete tables
+  - [x] Set table positions (row, col) for grid layout
+  - [x] Set capacity (for future reservations)
+  - [x] Activate/deactivate tables
+- [x] Add F-key binding for table management (F8 - admin only)
+- [x] Add F3 for inventory access from restaurant mode
 
 ## Phase 7: Reports Integration
 - [ ] Extend daily reports for restaurant mode

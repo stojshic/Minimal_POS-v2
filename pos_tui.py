@@ -175,20 +175,21 @@ class RestaurantScreen(Screen):
     .table-occupied {
         background: $warning;
     }
-
-    #controls {
-        dock: bottom;
-        height: auto;
-        layout: horizontal;
-        padding: 1;
-        background: $panel;
-    }
     """
 
     BINDINGS = [
-        Binding("escape", "back", "Nazad"),
-        Binding("t", "manage_tables", "Upravljanje stolovima"),
+        Binding("f3", "inventory", "Inventar", show=True),
+        Binding("f8", "manage_tables", "Stolovi", show=True),
+        Binding("f9", "back", "Odjava", show=True),
+        Binding("r", "refresh", "Osveži"),
     ]
+
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Control binding visibility based on user role"""
+        admin_only = {"manage_tables", "inventory"}
+        if action in admin_only:
+            return self.app.is_admin()
+        return True
 
     def __init__(self):
         super().__init__()
@@ -229,10 +230,6 @@ class RestaurantScreen(Screen):
                                 classes=btn_class
                             )
 
-            with Horizontal(id="controls"):
-                yield Button("Osveži [R]", id="refresh-btn", variant="primary")
-                yield Button("Upravljanje stolovima [T]", id="manage-tables-btn", variant="default")
-
         yield Footer()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -247,10 +244,6 @@ class RestaurantScreen(Screen):
                     TableOrderScreen(table, self.app.pos),
                     self.handle_table_closed
                 )
-        elif btn_id == "refresh-btn":
-            self.refresh_tables()
-        elif btn_id == "manage-tables-btn":
-            self.action_manage_tables()
 
     def handle_table_closed(self, result: dict) -> None:
         """Handle when table order screen is closed"""
@@ -277,7 +270,367 @@ class RestaurantScreen(Screen):
     def action_manage_tables(self) -> None:
         """Open table management (admin only)"""
         if self.app.require_admin("Upravljanje stolovima"):
-            self.notify("Upravljanje stolovima - dolazi uskoro!", severity="information")
+            self.app.push_screen(
+                TableManagementScreen(self.tables),
+                self.handle_tables_updated
+            )
+
+    def action_inventory(self) -> None:
+        """Open inventory management (admin only)"""
+        if self.app.require_admin("Inventar"):
+            self.app.push_screen(InventoryManagementScreen(self.app.pos))
+
+    def action_refresh(self) -> None:
+        """Refresh table display"""
+        self.refresh_tables()
+
+    def handle_tables_updated(self, updated_tables: list) -> None:
+        """Handle when tables are updated from management screen"""
+        if updated_tables:
+            self.tables = updated_tables
+            self.refresh_tables()
+
+
+class TableManagementScreen(Screen):
+    """Admin screen for managing restaurant tables"""
+
+    CSS = """
+    TableManagementScreen {
+        background: $surface;
+    }
+
+    #table-mgmt-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #table-mgmt-title {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+        padding: 1;
+        dock: top;
+    }
+
+    #tables-list {
+        height: 1fr;
+        border: solid $primary;
+        margin: 1 0;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    Button {
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("n", "new_table", "Novi sto"),
+        Binding("e", "edit_table", "Izmeni"),
+        Binding("d", "delete_table", "Obriši"),
+        Binding("a", "toggle_active", "Aktiviraj/Deaktiviraj"),
+    ]
+
+    def __init__(self, tables: list):
+        super().__init__()
+        # Copy tables to avoid modifying original until save
+        self.tables = [t.copy() for t in tables]
+        self.changed = False
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="table-mgmt-container"):
+            yield Static("🪑 UPRAVLJANJE STOLOVIMA", id="table-mgmt-title")
+            yield DataTable(id="tables-list")
+
+            with Horizontal(id="controls"):
+                yield Button("Novi sto [N]", id="new-btn", variant="success")
+                yield Button("Izmeni [E]", id="edit-btn", variant="primary")
+                yield Button("Aktiviraj/Deakt. [A]", id="toggle-btn", variant="warning")
+                yield Button("Obriši [D]", id="delete-btn", variant="error")
+                yield Button("Zatvori [Esc]", id="close-btn", variant="default")
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Setup table"""
+        table = self.query_one("#tables-list", DataTable)
+        table.add_columns("ID", "Naziv", "Red", "Kolona", "Kapacitet", "Aktivan")
+        table.cursor_type = "row"
+        self.load_tables()
+
+    def load_tables(self) -> None:
+        """Load tables into DataTable"""
+        table = self.query_one("#tables-list", DataTable)
+        table.clear()
+
+        # Sort by row, then column
+        sorted_tables = sorted(self.tables, key=lambda t: (t["row"], t["col"]))
+
+        for t in sorted_tables:
+            table.add_row(
+                str(t["id"]),
+                t["name"],
+                str(t["row"]),
+                str(t["col"]),
+                str(t.get("capacity", 4)),
+                "DA" if t.get("is_active", True) else "NE"
+            )
+
+    def get_selected_table(self) -> Optional[dict]:
+        """Get currently selected table"""
+        table = self.query_one("#tables-list", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            table_id = int(row[0])
+            return next((t for t in self.tables if t["id"] == table_id), None)
+        return None
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        btn_id = event.button.id
+
+        if btn_id == "new-btn":
+            self.action_new_table()
+        elif btn_id == "edit-btn":
+            self.action_edit_table()
+        elif btn_id == "toggle-btn":
+            self.action_toggle_active()
+        elif btn_id == "delete-btn":
+            self.action_delete_table()
+        elif btn_id == "close-btn":
+            self.action_close()
+
+    def action_new_table(self) -> None:
+        """Add new table"""
+        # Find next available ID
+        max_id = max((t["id"] for t in self.tables), default=0)
+        new_table = {
+            "id": max_id + 1,
+            "name": f"Sto {max_id + 1}",
+            "row": 0,
+            "col": 0,
+            "capacity": 4,
+            "is_active": True,
+            "total": 0.0,
+            "occupied": False
+        }
+        self.app.push_screen(
+            AddEditTableScreen(new_table, is_new=True),
+            self.handle_table_saved
+        )
+
+    def action_edit_table(self) -> None:
+        """Edit selected table"""
+        table = self.get_selected_table()
+        if table:
+            self.app.push_screen(
+                AddEditTableScreen(table.copy(), is_new=False),
+                self.handle_table_saved
+            )
+        else:
+            self.notify("Izaberite sto!", severity="warning")
+
+    def handle_table_saved(self, result: dict) -> None:
+        """Handle saved table from AddEditTableScreen"""
+        if result:
+            table_id = result["id"]
+            existing = next((t for t in self.tables if t["id"] == table_id), None)
+
+            if existing:
+                # Update existing
+                existing.update(result)
+            else:
+                # Add new
+                self.tables.append(result)
+
+            self.changed = True
+            self.load_tables()
+            self.notify("Sto sačuvan!", severity="success")
+
+    def action_toggle_active(self) -> None:
+        """Toggle table active status"""
+        table = self.get_selected_table()
+        if table:
+            table["is_active"] = not table.get("is_active", True)
+            status = "aktiviran" if table["is_active"] else "deaktiviran"
+            self.changed = True
+            self.load_tables()
+            self.notify(f"Sto {status}!", severity="success")
+        else:
+            self.notify("Izaberite sto!", severity="warning")
+
+    def action_delete_table(self) -> None:
+        """Delete selected table"""
+        table = self.get_selected_table()
+        if table:
+            if table.get("occupied", False):
+                self.notify("Ne možete obrisati zauzet sto!", severity="error")
+                return
+
+            self.tables = [t for t in self.tables if t["id"] != table["id"]]
+            self.changed = True
+            self.load_tables()
+            self.notify(f"Sto '{table['name']}' obrisan!", severity="warning")
+        else:
+            self.notify("Izaberite sto!", severity="warning")
+
+    def action_close(self) -> None:
+        """Close and return updated tables"""
+        if self.changed:
+            self.dismiss(self.tables)
+        else:
+            self.dismiss(None)
+
+
+class AddEditTableScreen(Screen):
+    """Screen for adding or editing a table"""
+
+    CSS = """
+    AddEditTableScreen {
+        align: center middle;
+        background: $surface-darken-1;
+    }
+
+    #form-container {
+        width: 60;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 2;
+    }
+
+    #form-title {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+        padding: 1;
+    }
+
+    .form-label {
+        padding: 1 0 0 0;
+        color: $text;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    #form-row {
+        height: auto;
+        width: 100%;
+    }
+
+    .half-input {
+        width: 1fr;
+        margin: 0 1;
+    }
+
+    #buttons {
+        height: auto;
+        layout: horizontal;
+        padding: 1 0;
+    }
+
+    #buttons Button {
+        width: 1fr;
+        margin: 0 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Odustani"),
+    ]
+
+    def __init__(self, table: dict, is_new: bool = False):
+        super().__init__()
+        self.table = table
+        self.is_new = is_new
+
+    def compose(self) -> ComposeResult:
+        title = "NOVI STO" if self.is_new else f"IZMENI - {self.table['name']}"
+
+        with Vertical(id="form-container"):
+            yield Static(f"🪑 {title}", id="form-title")
+
+            yield Label("Naziv stola:", classes="form-label")
+            yield Input(value=self.table.get("name", ""), id="name-input")
+
+            with Horizontal(id="form-row"):
+                with Vertical(classes="half-input"):
+                    yield Label("Red (0-9):", classes="form-label")
+                    yield Input(value=str(self.table.get("row", 0)), id="row-input", type="integer")
+
+                with Vertical(classes="half-input"):
+                    yield Label("Kolona (0-9):", classes="form-label")
+                    yield Input(value=str(self.table.get("col", 0)), id="col-input", type="integer")
+
+            yield Label("Kapacitet (broj mesta):", classes="form-label")
+            yield Input(value=str(self.table.get("capacity", 4)), id="capacity-input", type="integer")
+
+            with Horizontal(id="buttons"):
+                yield Button("Sačuvaj", id="save-btn", variant="success")
+                yield Button("Odustani", id="cancel-btn", variant="default")
+
+    def on_mount(self) -> None:
+        """Focus first input"""
+        self.query_one("#name-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "save-btn":
+            self.action_save()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def action_save(self) -> None:
+        """Save table"""
+        name = self.query_one("#name-input", Input).value.strip()
+        row_str = self.query_one("#row-input", Input).value.strip()
+        col_str = self.query_one("#col-input", Input).value.strip()
+        capacity_str = self.query_one("#capacity-input", Input).value.strip()
+
+        # Validate
+        if not name:
+            self.notify("Unesite naziv stola!", severity="error")
+            return
+
+        try:
+            row = int(row_str) if row_str else 0
+            col = int(col_str) if col_str else 0
+            capacity = int(capacity_str) if capacity_str else 4
+
+            if row < 0 or row > 9 or col < 0 or col > 9:
+                self.notify("Red i kolona moraju biti 0-9!", severity="error")
+                return
+
+            if capacity < 1:
+                self.notify("Kapacitet mora biti bar 1!", severity="error")
+                return
+
+        except ValueError:
+            self.notify("Unesite ispravne brojeve!", severity="error")
+            return
+
+        # Update table data
+        self.table["name"] = name
+        self.table["row"] = row
+        self.table["col"] = col
+        self.table["capacity"] = capacity
+
+        self.dismiss(self.table)
+
+    def action_cancel(self) -> None:
+        """Cancel without saving"""
+        self.dismiss(None)
 
 
 class TableOrderScreen(Screen):
