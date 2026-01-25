@@ -2403,17 +2403,36 @@ class LowStockScreen(Screen):
     LowStockScreen {
         background: $surface;
     }
-    
+
     #stock-container {
         height: 100%;
         padding: 1;
     }
-    
+
+    #input-row {
+        height: auto;
+        width: 100%;
+        padding: 0 1;
+    }
+
+    #input-row Label {
+        padding: 1 1 1 0;
+    }
+
+    #threshold-input {
+        width: 20;
+    }
+
+    #show-btn {
+        margin-left: 1;
+    }
+
     #stock-table {
         height: 1fr;
         border: solid $warning;
+        margin: 1 0;
     }
-    
+
     #controls {
         dock: bottom;
         height: auto;
@@ -2435,7 +2454,7 @@ class LowStockScreen(Screen):
         with Vertical(id="stock-container"):
             yield Label("🟡  NISKO STANJE ZALIHA", classes="label")
             
-            with Horizontal():
+            with Horizontal(id="input-row"):
                 yield Label("Minimalno stanje:")
                 yield Input(value="10", id="threshold-input", type="number")
                 yield Button("Prikaži", id="show-btn", variant="primary")
@@ -4022,6 +4041,9 @@ class POSApp(App):
         if user:
             self.current_user = user
 
+            # Refresh footer to show role-appropriate bindings
+            self.refresh_bindings()
+
             # Update user info bar
             user_info = self.query_one("#user-info", Static)
             user_info.update(
@@ -4059,23 +4081,6 @@ class POSApp(App):
             # Login failed or cancelled - quit app
             self.exit()
 
-    def update_ui_for_role(self) -> None:
-        """Update UI based on user role"""
-        if not self.current_user:
-            return
-
-        role = self.current_user['role']
-
-        # For now, all users see the same interface
-        # We'll add admin-only screens in next step
-
-        if role == 'cashier':
-            # Cashiers can't access certain features (we'll add restrictions)
-            pass
-        elif role == 'admin':
-            # Admins see everything
-            pass
-
     def is_admin(self) -> bool:
         """Check if current user is admin"""
         return self.current_user and self.current_user['role'] == 'admin'
@@ -4090,6 +4095,20 @@ class POSApp(App):
             return False
         return True
 
+    def check_action(self, action: str, parameters: tuple) -> bool | None:
+        """Control action/binding visibility based on user role.
+
+        Returns False to hide the binding from footer.
+        Returns True or None to show it.
+        """
+        # Admin-only actions - hide from footer for non-admins
+        admin_only_actions = {"otpremnice", "user_management", "customers", "inventory"}
+
+        if action in admin_only_actions:
+            return self.is_admin()
+
+        return True
+
     def action_logout(self) -> None:
         """F9 - Logout current user"""
         # Clear cart before logout for security
@@ -4098,6 +4117,9 @@ class POSApp(App):
 
         # Clear current user
         self.current_user = None
+
+        # Refresh footer to hide admin-only bindings
+        self.refresh_bindings()
 
         # Pop all screens back to base to prevent restricted screens from remaining
         # This fixes the bug where admin logs out on Users screen and cashier still sees it
