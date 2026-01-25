@@ -24,25 +24,26 @@
   - [ ] `get_all_tables_status()` - for grid display
 
 ## Phase 3: UI - Restaurant Main Screen
-- [ ] Create `RestaurantScreen` class (table grid view)
-  - [ ] Dynamic grid based on table positions
-  - [ ] Each table button shows: name + current total
-  - [ ] Color coding: green=free, yellow=occupied, red=needs attention
-  - [ ] Click table → open `TableOrderScreen`
-- [ ] Modify `POSApp` to check `STORE_CONFIG['store_type']` on startup
-- [ ] Route to `RestaurantScreen` or existing sales screen based on type
+- [x] Create `RestaurantScreen` class (table grid view)
+  - [x] Dynamic grid based on table positions
+  - [x] Each table button shows: name + current total
+  - [x] Color coding: green=free, yellow=occupied
+  - [x] Click table → open `TableOrderScreen`
+- [x] Modify `POSApp` to check `STORE_CONFIG['store_type']` on startup
+- [x] Route to `RestaurantScreen` or existing sales screen based on type
 
 ## Phase 4: UI - Table Order Screen
-- [ ] Create `TableOrderScreen` class
-  - [ ] Show table name/number at top
-  - [ ] Left panel: menu items (from inventory, maybe filtered by category)
-  - [ ] Right panel: current orders for this table
-  - [ ] Add item to order (with optional notes for kitchen)
-  - [ ] Remove/edit order item
-  - [ ] Show running total
-  - [ ] Button: "Štampaj račun" (print receipt & close table)
-  - [ ] Button: "Štampaj porudžbinu" (print order ticket for kitchen/bar)
-  - [ ] Button: "Nazad" (back to table grid, keep table open)
+- [x] Create `TableOrderScreen` class
+  - [x] Show table name/number at top
+  - [x] Left panel: menu items (from inventory, with search)
+  - [x] Right panel: current orders for this table
+  - [x] Add item to order
+  - [x] Remove order item
+  - [x] Show running total
+  - [x] Button: "Naplati" (print receipt & close table)
+  - [x] Button: "Štampaj porudžbinu" (print order ticket for kitchen/bar)
+  - [x] Button: "Nazad" (back to table grid, keep table open)
+  - [ ] Add notes for kitchen (future)
 
 ## Phase 5: Order Tickets (Kitchen/Bar Printing)
 - [ ] Add `item_type` to inventory (food/drink/other) for routing

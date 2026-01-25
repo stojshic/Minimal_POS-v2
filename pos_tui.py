@@ -128,6 +128,433 @@ class LoginScreen(Screen):
             self.query_one("#password-input", Input).focus()
 
 
+class RestaurantScreen(Screen):
+    """Restaurant mode - table grid view"""
+
+    CSS = """
+    RestaurantScreen {
+        background: $surface;
+    }
+
+    #restaurant-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #restaurant-title {
+        text-align: center;
+        text-style: bold;
+        color: $accent;
+        padding: 1;
+        dock: top;
+    }
+
+    #tables-grid {
+        height: 1fr;
+        padding: 1;
+        align: center middle;
+    }
+
+    .table-row {
+        height: auto;
+        width: 100%;
+        align: center middle;
+        padding: 1;
+    }
+
+    .table-btn {
+        width: 24;
+        height: 7;
+        margin: 1;
+    }
+
+    .table-free {
+        background: $success;
+    }
+
+    .table-occupied {
+        background: $warning;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "back", "Nazad"),
+        Binding("t", "manage_tables", "Upravljanje stolovima"),
+    ]
+
+    def __init__(self):
+        super().__init__()
+        # Mock table data - will be replaced with database
+        self.tables = [
+            {"id": 1, "name": "Sto 1", "row": 0, "col": 0, "total": 0.0, "occupied": False},
+            {"id": 2, "name": "Sto 2", "row": 0, "col": 1, "total": 0.0, "occupied": False},
+            {"id": 3, "name": "Sto 3", "row": 0, "col": 2, "total": 0.0, "occupied": False},
+            {"id": 4, "name": "Sto 4", "row": 1, "col": 0, "total": 1500.0, "occupied": True},
+            {"id": 5, "name": "Sto 5", "row": 1, "col": 1, "total": 0.0, "occupied": False},
+            {"id": 6, "name": "Sto 6", "row": 1, "col": 2, "total": 3200.0, "occupied": True},
+        ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="restaurant-container"):
+            yield Static("🍽️  RESTORAN - STOLOVI", id="restaurant-title")
+
+            with Vertical(id="tables-grid"):
+                # Group tables by row
+                rows = {}
+                for table in self.tables:
+                    row = table["row"]
+                    if row not in rows:
+                        rows[row] = []
+                    rows[row].append(table)
+
+                # Create rows
+                for row_num in sorted(rows.keys()):
+                    with Horizontal(classes="table-row"):
+                        # Sort by column within row
+                        for table in sorted(rows[row_num], key=lambda t: t["col"]):
+                            btn_class = "table-btn table-occupied" if table["occupied"] else "table-btn table-free"
+                            total_text = f"\n{table['total']:.0f} RSD" if table["total"] > 0 else "\nSlobodan"
+                            yield Button(
+                                f"{table['name']}{total_text}",
+                                id=f"table-{table['id']}",
+                                classes=btn_class
+                            )
+
+            with Horizontal(id="controls"):
+                yield Button("Osveži [R]", id="refresh-btn", variant="primary")
+                yield Button("Upravljanje stolovima [T]", id="manage-tables-btn", variant="default")
+
+        yield Footer()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle table button clicks"""
+        btn_id = event.button.id
+
+        if btn_id and btn_id.startswith("table-"):
+            table_id = int(btn_id.split("-")[1])
+            table = next((t for t in self.tables if t["id"] == table_id), None)
+            if table:
+                self.app.push_screen(
+                    TableOrderScreen(table, self.app.pos),
+                    self.handle_table_closed
+                )
+        elif btn_id == "refresh-btn":
+            self.refresh_tables()
+        elif btn_id == "manage-tables-btn":
+            self.action_manage_tables()
+
+    def handle_table_closed(self, result: dict) -> None:
+        """Handle when table order screen is closed"""
+        if result:
+            # Update table data from result
+            table_id = result.get("table_id")
+            for table in self.tables:
+                if table["id"] == table_id:
+                    table["total"] = result.get("total", 0.0)
+                    table["occupied"] = result.get("occupied", False)
+                    break
+            self.refresh_tables()
+
+    def refresh_tables(self) -> None:
+        """Refresh table display - will reload from DB later"""
+        # For now, just remount to refresh the display
+        self.app.pop_screen()
+        self.app.push_screen(RestaurantScreen())
+
+    def action_back(self) -> None:
+        """Go back - for restaurant this logs out"""
+        self.app.action_logout()
+
+    def action_manage_tables(self) -> None:
+        """Open table management (admin only)"""
+        if self.app.require_admin("Upravljanje stolovima"):
+            self.notify("Upravljanje stolovima - dolazi uskoro!", severity="information")
+
+
+class TableOrderScreen(Screen):
+    """Screen for managing orders at a single table"""
+
+    CSS = """
+    TableOrderScreen {
+        background: $surface;
+    }
+
+    #table-order-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #table-header {
+        dock: top;
+        height: auto;
+        padding: 1;
+        background: $primary;
+        text-align: center;
+    }
+
+    #main-content {
+        height: 1fr;
+    }
+
+    #menu-panel {
+        width: 3fr;
+        border: solid $primary;
+        padding: 1;
+    }
+
+    #order-panel {
+        width: 2fr;
+        border: solid $accent;
+        padding: 1;
+    }
+
+    #order-total {
+        padding: 1;
+        text-style: bold;
+        background: $success;
+        color: $text;
+        text-align: center;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    .panel-label {
+        padding: 1 0;
+        text-style: bold;
+        color: $accent;
+    }
+
+    DataTable {
+        height: 1fr;
+    }
+
+    #search-input {
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "back", "Nazad"),
+        Binding("enter", "add_item", "Dodaj"),
+        Binding("-", "remove_item", "Ukloni"),
+        Binding("f5", "print_bill", "Račun"),
+        Binding("p", "print_order", "Porudžbina"),
+    ]
+
+    def __init__(self, table: dict, pos_service):
+        super().__init__()
+        self.table = table
+        self.pos = pos_service
+        # Mock orders for this table - will be from DB later
+        self.orders = []
+        if table["occupied"]:
+            # Add some mock orders for occupied tables
+            self.orders = [
+                {"id": 1, "item": "Pivo", "quantity": 2, "price": 250.0},
+                {"id": 2, "item": "Ćevapi", "quantity": 1, "price": 800.0},
+            ]
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="table-order-container"):
+            yield Static(f"🍽️  {self.table['name'].upper()}", id="table-header")
+
+            with Horizontal(id="main-content"):
+                # Left panel - Menu items
+                with Vertical(id="menu-panel"):
+                    yield Label("📋 MENI", classes="panel-label")
+                    yield Input(placeholder="Pretraga artikala...", id="search-input")
+                    yield DataTable(id="menu-table")
+
+                # Right panel - Current orders
+                with Vertical(id="order-panel"):
+                    yield Label("📝 PORUDŽBINA", classes="panel-label")
+                    yield DataTable(id="order-table")
+                    yield Static(f"UKUPNO: {self.calculate_total():.2f} RSD", id="order-total")
+
+            with Horizontal(id="controls"):
+                yield Button("Dodaj [Enter]", id="add-btn", variant="primary")
+                yield Button("Ukloni [-]", id="remove-btn", variant="error")
+                yield Button("Štampaj porudžbinu [P]", id="print-order-btn", variant="default")
+                yield Button("Naplati [F5]", id="print-bill-btn", variant="success")
+                yield Button("Nazad [Esc]", id="back-btn", variant="default")
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Setup tables"""
+        # Setup menu table
+        menu_table = self.query_one("#menu-table", DataTable)
+        menu_table.add_columns("ID", "Artikal", "Cena")
+        menu_table.cursor_type = "row"
+        self.load_menu()
+
+        # Setup order table
+        order_table = self.query_one("#order-table", DataTable)
+        order_table.add_columns("Artikal", "Kol.", "Cena", "Ukupno")
+        order_table.cursor_type = "row"
+        self.load_orders()
+
+    def load_menu(self, search: str = "") -> None:
+        """Load menu items from inventory"""
+        menu_table = self.query_one("#menu-table", DataTable)
+        menu_table.clear()
+
+        items = self.pos.inventory.get_all()
+        for item in items:
+            if search.lower() in item["item"].lower() or search in str(item.get("barcode", "")):
+                menu_table.add_row(
+                    str(item["id"]),
+                    item["item"],
+                    f"{item['price']:.2f}"
+                )
+
+    def load_orders(self) -> None:
+        """Load current orders for this table"""
+        order_table = self.query_one("#order-table", DataTable)
+        order_table.clear()
+
+        for order in self.orders:
+            total = order["quantity"] * order["price"]
+            order_table.add_row(
+                order["item"],
+                str(order["quantity"]),
+                f"{order['price']:.2f}",
+                f"{total:.2f}"
+            )
+
+        self.update_total()
+
+    def calculate_total(self) -> float:
+        """Calculate total for all orders"""
+        return sum(o["quantity"] * o["price"] for o in self.orders)
+
+    def update_total(self) -> None:
+        """Update total display"""
+        total = self.calculate_total()
+        self.query_one("#order-total", Static).update(f"UKUPNO: {total:.2f} RSD")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Handle search input"""
+        if event.input.id == "search-input":
+            self.load_menu(event.value)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        btn_id = event.button.id
+
+        if btn_id == "add-btn":
+            self.action_add_item()
+        elif btn_id == "remove-btn":
+            self.action_remove_item()
+        elif btn_id == "print-order-btn":
+            self.action_print_order()
+        elif btn_id == "print-bill-btn":
+            self.action_print_bill()
+        elif btn_id == "back-btn":
+            self.action_back()
+
+    def action_add_item(self) -> None:
+        """Add selected menu item to order"""
+        menu_table = self.query_one("#menu-table", DataTable)
+        if menu_table.cursor_row is not None:
+            row = menu_table.get_row_at(menu_table.cursor_row)
+            item_id = int(row[0])
+            item_name = row[1]
+            item_price = float(row[2])
+
+            # Check if item already in order
+            existing = next((o for o in self.orders if o["item"] == item_name), None)
+            if existing:
+                existing["quantity"] += 1
+            else:
+                self.orders.append({
+                    "id": item_id,
+                    "item": item_name,
+                    "quantity": 1,
+                    "price": item_price
+                })
+
+            self.load_orders()
+            self.table["occupied"] = True
+            self.notify(f"Dodato: {item_name}", severity="information")
+
+    def action_remove_item(self) -> None:
+        """Remove selected item from order"""
+        order_table = self.query_one("#order-table", DataTable)
+        if order_table.cursor_row is not None and self.orders:
+            if order_table.cursor_row < len(self.orders):
+                removed = self.orders.pop(order_table.cursor_row)
+                self.load_orders()
+                self.notify(f"Uklonjeno: {removed['item']}", severity="warning")
+
+                if not self.orders:
+                    self.table["occupied"] = False
+
+    def action_print_order(self) -> None:
+        """Print order ticket for kitchen/bar"""
+        if not self.orders:
+            self.notify("Nema porudžbina za štampu!", severity="warning")
+            return
+
+        # Generate order ticket text
+        ticket = []
+        ticket.append("=" * 32)
+        ticket.append(f"PORUDŽBINA - {self.table['name']}".center(32))
+        ticket.append("=" * 32)
+        ticket.append("")
+
+        for order in self.orders:
+            ticket.append(f"{order['quantity']}x {order['item']}")
+
+        ticket.append("")
+        ticket.append("=" * 32)
+
+        self.notify("Porudžbina poslata u kuhinju!", severity="success")
+        # TODO: Show ticket in a viewer or send to printer
+
+    def action_print_bill(self) -> None:
+        """Print bill and close table"""
+        if not self.orders:
+            self.notify("Nema porudžbina za naplatu!", severity="warning")
+            return
+
+        # For now, just show total and close
+        total = self.calculate_total()
+        self.notify(f"Račun: {total:.2f} RSD - Sto zatvoren!", severity="success")
+
+        # Return result to parent
+        self.dismiss({
+            "table_id": self.table["id"],
+            "total": 0.0,  # Reset after payment
+            "occupied": False
+        })
+
+    def action_back(self) -> None:
+        """Go back to table grid"""
+        # Return current state
+        self.dismiss({
+            "table_id": self.table["id"],
+            "total": self.calculate_total(),
+            "occupied": len(self.orders) > 0
+        })
+
+
 class CustomerManagementScreen(Screen):
     """Screen for managing customers"""
     
@@ -4050,10 +4477,6 @@ class POSApp(App):
                 f"👤 {user['full_name']} ({user['role'].upper()}) | F9: Odjava"
             )
 
-            # For admin users, show inventory management screen
-            # if user['role'] == "admin":
-            #    self.push_screen(InventoryManagementScreen(self.pos))
-
             # Update header or show welcome message
             self.notify(
                 f"✅ Prijavljeni kao: {user['full_name']} ({user['role']})",
@@ -4061,25 +4484,37 @@ class POSApp(App):
                 timeout=5
             )
 
-            # Setup tables
-            inv_table = self.query_one("#inventory-table", DataTable)
-            inv_table.add_columns("ID", "Artikal", "Barkod", "Cena", "Stanje")
-            inv_table.cursor_type = "row"
+            # Route based on store type
+            store_type = STORE_CONFIG.get("store_type", "shop")
 
-            cart_table = self.query_one("#cart-table", DataTable)
-            cart_table.add_columns("Artikal", "Količina", "Cena", "Ukupno")
-
-            # Load inventory
-            self.load_inventory()
-
-            # Focus search input
-            self.query_one("#search-input", Input).focus()
-
-            # Update low stock banner
-            self.update_low_stock_banner()
+            if store_type == "restaurant":
+                # Restaurant mode - show table grid
+                self.push_screen(RestaurantScreen())
+            else:
+                # Shop mode - setup sales interface
+                self._setup_shop_mode()
         else:
             # Login failed or cancelled - quit app
             self.exit()
+
+    def _setup_shop_mode(self) -> None:
+        """Setup shop mode interface after login"""
+        # Setup tables
+        inv_table = self.query_one("#inventory-table", DataTable)
+        inv_table.add_columns("ID", "Artikal", "Barkod", "Cena", "Stanje")
+        inv_table.cursor_type = "row"
+
+        cart_table = self.query_one("#cart-table", DataTable)
+        cart_table.add_columns("Artikal", "Količina", "Cena", "Ukupno")
+
+        # Load inventory
+        self.load_inventory()
+
+        # Focus search input
+        self.query_one("#search-input", Input).focus()
+
+        # Update low stock banner
+        self.update_low_stock_banner()
 
     def is_admin(self) -> bool:
         """Check if current user is admin"""
