@@ -260,6 +260,74 @@ class Database:
                 )
             """)
 
+            # ============================================================
+            # Restaurant mode tables
+            # ============================================================
+
+            # Restaurant tables (physical tables in the restaurant)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS restaurant_tables (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    position_row INTEGER DEFAULT 0,
+                    position_col INTEGER DEFAULT 0,
+                    capacity INTEGER DEFAULT 4,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Table sessions (when a table is occupied)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS table_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    table_id INTEGER NOT NULL,
+                    waiter_id INTEGER,
+                    status TEXT DEFAULT 'open',
+                    opened_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    closed_at TEXT,
+                    total_amount REAL DEFAULT 0,
+                    payment_type TEXT,
+                    notes TEXT,
+                    FOREIGN KEY (table_id) REFERENCES restaurant_tables(id),
+                    FOREIGN KEY (waiter_id) REFERENCES users(id)
+                )
+            """)
+
+            # Table orders (individual items ordered at a table)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS table_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id INTEGER NOT NULL,
+                    item_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    quantity REAL NOT NULL,
+                    unit_price REAL NOT NULL,
+                    total_price REAL NOT NULL,
+                    status TEXT DEFAULT 'ordered',
+                    notes TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (session_id) REFERENCES table_sessions(id) ON DELETE CASCADE,
+                    FOREIGN KEY (item_id) REFERENCES inventory(id)
+                )
+            """)
+
+            # Initialize default restaurant tables if none exist
+            cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
+            if cursor.fetchone()[0] == 0:
+                default_tables = [
+                    ("Sto 1", 0, 0, 4),
+                    ("Sto 2", 0, 1, 4),
+                    ("Sto 3", 0, 2, 4),
+                    ("Sto 4", 1, 0, 4),
+                    ("Sto 5", 1, 1, 4),
+                    ("Sto 6", 1, 2, 4),
+                ]
+                cursor.executemany(
+                    "INSERT INTO restaurant_tables (name, position_row, position_col, capacity) VALUES (?, ?, ?, ?)",
+                    default_tables
+                )
+
     def run_migrations(self) -> Dict[str, Any]:
         """
         Run Phase 3 data migrations to consolidate old tables into unified sales.
@@ -1706,5 +1774,315 @@ class CustomerRepository:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
             return cursor.rowcount > 0
+
+
+# ============================================================
+# Restaurant Mode Repositories
+# ============================================================
+
+class TableRepository:
+    """Repository for restaurant table management"""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def get_all(self) -> List[Dict[str, Any]]:
+        """Get all tables ordered by position"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM restaurant_tables
+                ORDER BY position_row, position_col
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_active(self) -> List[Dict[str, Any]]:
+        """Get only active tables"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM restaurant_tables
+                WHERE is_active = 1
+                ORDER BY position_row, position_col
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_by_id(self, table_id: int) -> Optional[Dict[str, Any]]:
+        """Get table by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM restaurant_tables WHERE id = ?", (table_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def create(self, name: str, row: int = 0, col: int = 0, capacity: int = 4) -> int:
+        """Create new table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO restaurant_tables (name, position_row, position_col, capacity)
+                   VALUES (?, ?, ?, ?)""",
+                (name, row, col, capacity)
+            )
+            return cursor.lastrowid
+
+    def update(self, table_id: int, name: str, row: int, col: int, capacity: int) -> bool:
+        """Update table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE restaurant_tables
+                   SET name=?, position_row=?, position_col=?, capacity=?
+                   WHERE id=?""",
+                (name, row, col, capacity, table_id)
+            )
+            return cursor.rowcount > 0
+
+    def set_active(self, table_id: int, is_active: bool) -> bool:
+        """Set table active/inactive"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE restaurant_tables SET is_active = ? WHERE id = ?",
+                (1 if is_active else 0, table_id)
+            )
+            return cursor.rowcount > 0
+
+    def delete(self, table_id: int) -> bool:
+        """Delete table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM restaurant_tables WHERE id = ?", (table_id,))
+            return cursor.rowcount > 0
+
+    def get_tables_with_status(self) -> List[Dict[str, Any]]:
+        """Get all active tables with their current session status"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    t.*,
+                    s.id as session_id,
+                    s.status as session_status,
+                    s.opened_at,
+                    COALESCE(s.total_amount, 0) as current_total,
+                    u.full_name as waiter_name
+                FROM restaurant_tables t
+                LEFT JOIN table_sessions s ON t.id = s.table_id AND s.status = 'open'
+                LEFT JOIN users u ON s.waiter_id = u.id
+                WHERE t.is_active = 1
+                ORDER BY t.position_row, t.position_col
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+
+class TableSessionRepository:
+    """Repository for table sessions (when tables are occupied)"""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def get_open_session(self, table_id: int) -> Optional[Dict[str, Any]]:
+        """Get currently open session for a table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_sessions
+                WHERE table_id = ? AND status = 'open'
+            """, (table_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_by_id(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """Get session by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM table_sessions WHERE id = ?", (session_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def open_session(self, table_id: int, waiter_id: int = None) -> int:
+        """Open a new session for a table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO table_sessions (table_id, waiter_id, status, opened_at)
+                   VALUES (?, ?, 'open', ?)""",
+                (table_id, waiter_id, datetime.now().isoformat())
+            )
+            return cursor.lastrowid
+
+    def close_session(self, session_id: int, payment_type: str = 'cash') -> bool:
+        """Close a session (table paid and leaving)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE table_sessions
+                   SET status = 'closed', closed_at = ?, payment_type = ?
+                   WHERE id = ?""",
+                (datetime.now().isoformat(), payment_type, session_id)
+            )
+            return cursor.rowcount > 0
+
+    def update_total(self, session_id: int, total: float) -> bool:
+        """Update session total amount"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE table_sessions SET total_amount = ? WHERE id = ?",
+                (total, session_id)
+            )
+            return cursor.rowcount > 0
+
+    def get_session_history(self, table_id: int = None, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get session history, optionally filtered by table"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if table_id:
+                cursor.execute("""
+                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                    FROM table_sessions s
+                    JOIN restaurant_tables t ON s.table_id = t.id
+                    LEFT JOIN users u ON s.waiter_id = u.id
+                    WHERE s.table_id = ?
+                    ORDER BY s.opened_at DESC
+                    LIMIT ?
+                """, (table_id, limit))
+            else:
+                cursor.execute("""
+                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                    FROM table_sessions s
+                    JOIN restaurant_tables t ON s.table_id = t.id
+                    LEFT JOIN users u ON s.waiter_id = u.id
+                    ORDER BY s.opened_at DESC
+                    LIMIT ?
+                """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_open_sessions(self) -> List[Dict[str, Any]]:
+        """Get all currently open sessions"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                FROM table_sessions s
+                JOIN restaurant_tables t ON s.table_id = t.id
+                LEFT JOIN users u ON s.waiter_id = u.id
+                WHERE s.status = 'open'
+                ORDER BY s.opened_at
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
+
+class TableOrderRepository:
+    """Repository for orders within a table session"""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def get_session_orders(self, session_id: int) -> List[Dict[str, Any]]:
+        """Get all orders for a session"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_orders
+                WHERE session_id = ?
+                ORDER BY created_at
+            """, (session_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_by_id(self, order_id: int) -> Optional[Dict[str, Any]]:
+        """Get order by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM table_orders WHERE id = ?", (order_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def add_order(
+        self,
+        session_id: int,
+        item_id: int,
+        item_name: str,
+        quantity: float,
+        unit_price: float,
+        notes: str = ""
+    ) -> int:
+        """Add an order to a session"""
+        total_price = quantity * unit_price
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO table_orders
+                   (session_id, item_id, item_name, quantity, unit_price, total_price, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, item_id, item_name, quantity, unit_price, total_price, notes)
+            )
+            return cursor.lastrowid
+
+    def update_quantity(self, order_id: int, quantity: float, unit_price: float) -> bool:
+        """Update order quantity"""
+        total_price = quantity * unit_price
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE table_orders
+                   SET quantity = ?, total_price = ?
+                   WHERE id = ?""",
+                (quantity, total_price, order_id)
+            )
+            return cursor.rowcount > 0
+
+    def update_status(self, order_id: int, status: str) -> bool:
+        """Update order status (ordered, preparing, served)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE table_orders SET status = ? WHERE id = ?",
+                (status, order_id)
+            )
+            return cursor.rowcount > 0
+
+    def delete_order(self, order_id: int) -> bool:
+        """Delete an order"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM table_orders WHERE id = ?", (order_id,))
+            return cursor.rowcount > 0
+
+    def get_session_total(self, session_id: int) -> float:
+        """Calculate total for a session"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COALESCE(SUM(total_price), 0) FROM table_orders WHERE session_id = ?",
+                (session_id,)
+            )
+            return cursor.fetchone()[0]
+
+    def get_orders_by_status(self, session_id: int, status: str) -> List[Dict[str, Any]]:
+        """Get orders filtered by status"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_orders
+                WHERE session_id = ? AND status = ?
+                ORDER BY created_at
+            """, (session_id, status))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_pending_orders(self) -> List[Dict[str, Any]]:
+        """Get all pending orders across all open sessions (for kitchen display)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT o.*, t.name as table_name, s.id as session_id
+                FROM table_orders o
+                JOIN table_sessions s ON o.session_id = s.id
+                JOIN restaurant_tables t ON s.table_id = t.id
+                WHERE s.status = 'open' AND o.status = 'ordered'
+                ORDER BY o.created_at
+            """)
+            return [dict(row) for row in cursor.fetchall()]
 
 

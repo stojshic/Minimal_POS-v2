@@ -5,13 +5,13 @@
 - [x] Add `store_type` field to `STORE_CONFIG` in `config.py` (default: `"shop"`)
 
 ## Phase 1: Database Changes
-- [ ] Create `tables` table (id, name, capacity, position_row, position_col, is_active)
-- [ ] Create `table_sessions` table (id, table_id, opened_at, closed_at, status, waiter_id)
-- [ ] Create `table_orders` table (id, session_id, item_id, quantity, price, notes, status, created_at)
-- [ ] Add `TableRepository` to `pos_db_layer.py`
-- [ ] Add `TableSessionRepository` to `pos_db_layer.py`
-- [ ] Add `TableOrderRepository` to `pos_db_layer.py`
-- [ ] Create migration/init for default tables (6 tables in 3x2 grid)
+- [x] Create `restaurant_tables` table (id, name, capacity, position_row, position_col, is_active)
+- [x] Create `table_sessions` table (id, table_id, opened_at, closed_at, status, waiter_id, total_amount, payment_type)
+- [x] Create `table_orders` table (id, session_id, item_id, item_name, quantity, unit_price, total_price, notes, status)
+- [x] Add `TableRepository` to `pos_db_layer.py`
+- [x] Add `TableSessionRepository` to `pos_db_layer.py`
+- [x] Add `TableOrderRepository` to `pos_db_layer.py`
+- [x] Create migration/init for default tables (6 tables in 3x2 grid)
 
 ## Phase 2: Business Logic
 - [ ] Create `TableService` in `pos_business_logic.py`
