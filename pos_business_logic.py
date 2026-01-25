@@ -1029,3 +1029,298 @@ class RefundService:
         self.inventory.update_quantity(item['id'], quantity)
         
         return True, f"Povraćaj: {quantity}x {item_name} = {refund_amount:.2f} RSD"
+
+
+class TableService:
+    """Service for restaurant table management"""
+
+    def __init__(self, table_repo, session_repo, order_repo, inventory_repo):
+        self.tables = table_repo
+        self.sessions = session_repo
+        self.orders = order_repo
+        self.inventory = inventory_repo
+
+    # ============================================================
+    # Table Management
+    # ============================================================
+
+    def get_all_tables(self) -> List[dict]:
+        """Get all tables"""
+        return self.tables.get_all()
+
+    def get_tables_with_status(self) -> List[dict]:
+        """Get all active tables with their current status (for grid display)"""
+        tables = self.tables.get_tables_with_status()
+
+        # Enhance with calculated totals from orders
+        for table in tables:
+            if table.get('session_id'):
+                table['total'] = self.orders.get_session_total(table['session_id'])
+                table['occupied'] = True
+            else:
+                table['total'] = 0.0
+                table['occupied'] = False
+
+        return tables
+
+    def create_table(self, name: str, row: int, col: int, capacity: int) -> Tuple[bool, str, int]:
+        """Create a new table"""
+        try:
+            table_id = self.tables.create(name, row, col, capacity)
+            return True, f"Sto '{name}' kreiran", table_id
+        except Exception as e:
+            return False, f"Greška: {str(e)}", 0
+
+    def update_table(self, table_id: int, name: str, row: int, col: int, capacity: int) -> Tuple[bool, str]:
+        """Update table info"""
+        success = self.tables.update(table_id, name, row, col, capacity)
+        if success:
+            return True, f"Sto '{name}' ažuriran"
+        return False, "Greška pri ažuriranju"
+
+    def delete_table(self, table_id: int) -> Tuple[bool, str]:
+        """Delete a table (only if not occupied)"""
+        # Check if table has open session
+        session = self.sessions.get_open_session(table_id)
+        if session:
+            return False, "Ne možete obrisati zauzet sto!"
+
+        success = self.tables.delete(table_id)
+        if success:
+            return True, "Sto obrisan"
+        return False, "Greška pri brisanju"
+
+    def toggle_table_active(self, table_id: int) -> Tuple[bool, str]:
+        """Toggle table active status"""
+        table = self.tables.get_by_id(table_id)
+        if not table:
+            return False, "Sto nije pronađen"
+
+        # Check if trying to deactivate occupied table
+        if table['is_active']:
+            session = self.sessions.get_open_session(table_id)
+            if session:
+                return False, "Ne možete deaktivirati zauzet sto!"
+
+        new_status = not table['is_active']
+        success = self.tables.set_active(table_id, new_status)
+        if success:
+            status_text = "aktiviran" if new_status else "deaktiviran"
+            return True, f"Sto {status_text}"
+        return False, "Greška pri promeni statusa"
+
+    # ============================================================
+    # Session Management
+    # ============================================================
+
+    def open_table(self, table_id: int, waiter_id: int = None) -> Tuple[bool, str, Optional[int]]:
+        """Open a table (start new session)"""
+        # Check if already open
+        existing = self.sessions.get_open_session(table_id)
+        if existing:
+            return True, "Sto je već otvoren", existing['id']
+
+        session_id = self.sessions.open_session(table_id, waiter_id)
+        return True, "Sto otvoren", session_id
+
+    def close_table(self, session_id: int, payment_type: str = 'cash') -> Tuple[bool, str]:
+        """Close a table (finalize payment)"""
+        session = self.sessions.get_by_id(session_id)
+        if not session:
+            return False, "Sesija nije pronađena"
+
+        if session['status'] != 'open':
+            return False, "Sesija je već zatvorena"
+
+        # Calculate final total
+        total = self.orders.get_session_total(session_id)
+        self.sessions.update_total(session_id, total)
+
+        # Close the session
+        success = self.sessions.close_session(session_id, payment_type)
+        if success:
+            return True, f"Sto zatvoren. Ukupno: {total:.2f} RSD"
+        return False, "Greška pri zatvaranju stola"
+
+    def get_table_session(self, table_id: int) -> Optional[dict]:
+        """Get current open session for a table"""
+        return self.sessions.get_open_session(table_id)
+
+    # ============================================================
+    # Order Management
+    # ============================================================
+
+    def add_order(
+        self,
+        session_id: int,
+        item_id: int,
+        quantity: float = 1.0,
+        notes: str = ""
+    ) -> Tuple[bool, str]:
+        """Add an item to a table's order"""
+        # Get item from inventory
+        item = self.inventory.get_by_id(item_id)
+        if not item:
+            return False, "Artikal nije pronađen"
+
+        # Add order
+        order_id = self.orders.add_order(
+            session_id=session_id,
+            item_id=item_id,
+            item_name=item['item'],
+            quantity=quantity,
+            unit_price=item['price'],
+            notes=notes
+        )
+
+        # Update session total
+        total = self.orders.get_session_total(session_id)
+        self.sessions.update_total(session_id, total)
+
+        return True, f"Dodato: {quantity}x {item['item']}"
+
+    def remove_order(self, order_id: int) -> Tuple[bool, str]:
+        """Remove an order from a table"""
+        order = self.orders.get_by_id(order_id)
+        if not order:
+            return False, "Porudžbina nije pronađena"
+
+        session_id = order['session_id']
+        item_name = order['item_name']
+
+        success = self.orders.delete_order(order_id)
+        if success:
+            # Update session total
+            total = self.orders.get_session_total(session_id)
+            self.sessions.update_total(session_id, total)
+            return True, f"Uklonjeno: {item_name}"
+        return False, "Greška pri uklanjanju"
+
+    def update_order_quantity(self, order_id: int, new_quantity: float) -> Tuple[bool, str]:
+        """Update quantity of an existing order"""
+        order = self.orders.get_by_id(order_id)
+        if not order:
+            return False, "Porudžbina nije pronađena"
+
+        if new_quantity <= 0:
+            return self.remove_order(order_id)
+
+        success = self.orders.update_quantity(order_id, new_quantity, order['unit_price'])
+        if success:
+            # Update session total
+            total = self.orders.get_session_total(order['session_id'])
+            self.sessions.update_total(order['session_id'], total)
+            return True, f"Količina ažurirana: {new_quantity}x {order['item_name']}"
+        return False, "Greška pri ažuriranju"
+
+    def get_table_orders(self, session_id: int) -> List[dict]:
+        """Get all orders for a session"""
+        return self.orders.get_session_orders(session_id)
+
+    def get_table_total(self, session_id: int) -> float:
+        """Get total for a session"""
+        return self.orders.get_session_total(session_id)
+
+    def update_order_status(self, order_id: int, status: str) -> Tuple[bool, str]:
+        """Update order status (ordered -> preparing -> served)"""
+        valid_statuses = ['ordered', 'preparing', 'served']
+        if status not in valid_statuses:
+            return False, f"Nevažeći status. Dozvoljeni: {', '.join(valid_statuses)}"
+
+        success = self.orders.update_status(order_id, status)
+        if success:
+            return True, f"Status ažuriran: {status}"
+        return False, "Greška pri ažuriranju statusa"
+
+    # ============================================================
+    # Kitchen / Bar Display
+    # ============================================================
+
+    def get_pending_orders(self) -> List[dict]:
+        """Get all pending orders for kitchen display"""
+        return self.orders.get_pending_orders()
+
+    def get_open_sessions(self) -> List[dict]:
+        """Get all currently open sessions"""
+        return self.sessions.get_open_sessions()
+
+    # ============================================================
+    # Receipt Generation
+    # ============================================================
+
+    def generate_table_receipt(self, session_id: int, customer_info: dict = None) -> str:
+        """Generate receipt for a table session"""
+        session = self.sessions.get_by_id(session_id)
+        if not session:
+            return "Sesija nije pronađena"
+
+        table = self.tables.get_by_id(session['table_id'])
+        orders = self.orders.get_session_orders(session_id)
+
+        # Convert orders to receipt format
+        items = []
+        for order in orders:
+            items.append({
+                'item': order['item_name'],
+                'quantity': order['quantity'],
+                'price': order['unit_price'],
+                'vat_rate': 0.20  # TODO: Get from inventory
+            })
+
+        sale_data = {
+            'items': items,
+            'payment_info': {
+                'payment_type': session.get('payment_type', 'cash'),
+                'cash_amount': session.get('total_amount', 0),
+                'card_amount': 0,
+                'amount_tendered': session.get('total_amount', 0),
+                'change_given': 0
+            },
+            'sale_id': session_id,
+            'timestamp': session.get('opened_at', datetime.now().isoformat()),
+            'customer_info': customer_info
+        }
+
+        printer = FiscalReceipt(STORE_CONFIG)
+        receipt_text = printer.generate_receipt(sale_data)
+
+        # Add table info header
+        table_header = f"\n{'=' * 40}\n"
+        table_header += f"{table['name']}".center(40) + "\n"
+        table_header += f"{'=' * 40}\n"
+
+        return table_header + receipt_text
+
+    def generate_order_ticket(self, session_id: int, item_type: str = None) -> str:
+        """Generate order ticket for kitchen or bar"""
+        session = self.sessions.get_by_id(session_id)
+        if not session:
+            return "Sesija nije pronađena"
+
+        table = self.tables.get_by_id(session['table_id'])
+        orders = self.orders.get_session_orders(session_id)
+
+        # Filter by item type if specified (future: food vs drinks)
+        # For now, include all orders with status 'ordered'
+        pending_orders = [o for o in orders if o['status'] == 'ordered']
+
+        if not pending_orders:
+            return "Nema novih porudžbina"
+
+        ticket = []
+        ticket.append("=" * 32)
+        ticket.append(f"PORUDŽBINA - {table['name']}".center(32))
+        ticket.append(f"{datetime.now().strftime('%H:%M:%S')}".center(32))
+        ticket.append("=" * 32)
+        ticket.append("")
+
+        for order in pending_orders:
+            qty_str = f"{int(order['quantity'])}x" if order['quantity'] == int(order['quantity']) else f"{order['quantity']}x"
+            ticket.append(f"{qty_str} {order['item_name']}")
+            if order.get('notes'):
+                ticket.append(f"   >> {order['notes']}")
+
+        ticket.append("")
+        ticket.append("=" * 32)
+
+        return "\n".join(ticket)

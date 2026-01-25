@@ -14,14 +14,20 @@
 - [x] Create migration/init for default tables (6 tables in 3x2 grid)
 
 ## Phase 2: Business Logic
-- [ ] Create `TableService` in `pos_business_logic.py`
-  - [ ] `open_table(table_id, waiter_id)` - start new session
-  - [ ] `close_table(session_id)` - finalize and close
-  - [ ] `add_order(session_id, item_id, quantity, notes)`
-  - [ ] `remove_order(order_id)`
-  - [ ] `get_table_orders(session_id)`
-  - [ ] `get_table_total(session_id)`
-  - [ ] `get_all_tables_status()` - for grid display
+- [x] Create `TableService` in `pos_business_logic.py`
+  - [x] `open_table(table_id, waiter_id)` - start new session
+  - [x] `close_table(session_id)` - finalize and close
+  - [x] `add_order(session_id, item_id, quantity, notes)`
+  - [x] `remove_order(order_id)`
+  - [x] `get_table_orders(session_id)`
+  - [x] `get_table_total(session_id)`
+  - [x] `get_tables_with_status()` - for grid display
+  - [x] `generate_table_receipt()` - generate receipt for table
+  - [x] `generate_order_ticket()` - generate kitchen/bar ticket
+- [x] Wire up UI screens to use database
+  - [x] RestaurantScreen - loads tables from DB
+  - [x] TableOrderScreen - manages orders via TableService
+  - [x] TableManagementScreen - CRUD via TableService
 
 ## Phase 3: UI - Restaurant Main Screen
 - [x] Create `RestaurantScreen` class (table grid view)

@@ -12,11 +12,12 @@ from time import time
 from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
     InvoiceRepository, UserRepository, RefundRepository,
-    CustomerRepository, UnifiedSalesRepository
+    CustomerRepository, UnifiedSalesRepository,
+    TableRepository, TableSessionRepository, TableOrderRepository
 )
 from pos_business_logic import (
-        POSService, ReportService, PaymentInfo, DailyReportService, 
-        UserService, RefundService
+        POSService, ReportService, PaymentInfo, DailyReportService,
+        UserService, RefundService, TableService
 )
 from config import STORE_CONFIG, CONFIG
 
@@ -193,44 +194,56 @@ class RestaurantScreen(Screen):
 
     def __init__(self):
         super().__init__()
-        # Mock table data - will be replaced with database
-        self.tables = [
-            {"id": 1, "name": "Sto 1", "row": 0, "col": 0, "total": 0.0, "occupied": False},
-            {"id": 2, "name": "Sto 2", "row": 0, "col": 1, "total": 0.0, "occupied": False},
-            {"id": 3, "name": "Sto 3", "row": 0, "col": 2, "total": 0.0, "occupied": False},
-            {"id": 4, "name": "Sto 4", "row": 1, "col": 0, "total": 1500.0, "occupied": True},
-            {"id": 5, "name": "Sto 5", "row": 1, "col": 1, "total": 0.0, "occupied": False},
-            {"id": 6, "name": "Sto 6", "row": 1, "col": 2, "total": 3200.0, "occupied": True},
-        ]
+        self.tables = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical(id="restaurant-container"):
             yield Static("🍽️  RESTORAN - STOLOVI", id="restaurant-title")
-
-            with Vertical(id="tables-grid"):
-                # Group tables by row
-                rows = {}
-                for table in self.tables:
-                    row = table["row"]
-                    if row not in rows:
-                        rows[row] = []
-                    rows[row].append(table)
-
-                # Create rows
-                for row_num in sorted(rows.keys()):
-                    with Horizontal(classes="table-row"):
-                        # Sort by column within row
-                        for table in sorted(rows[row_num], key=lambda t: t["col"]):
-                            btn_class = "table-btn table-occupied" if table["occupied"] else "table-btn table-free"
-                            total_text = f"\n{table['total']:.0f} RSD" if table["total"] > 0 else "\nSlobodan"
-                            yield Button(
-                                f"{table['name']}{total_text}",
-                                id=f"table-{table['id']}",
-                                classes=btn_class
-                            )
-
+            yield Vertical(id="tables-grid")
         yield Footer()
+
+    def on_mount(self) -> None:
+        """Load tables from database"""
+        self.load_tables()
+
+    def load_tables(self) -> None:
+        """Load tables from database and update display"""
+        # Get tables with status from database
+        self.tables = self.app.table_service.get_tables_with_status()
+
+        # Convert DB format to display format
+        for table in self.tables:
+            table['row'] = table.get('position_row', 0)
+            table['col'] = table.get('position_col', 0)
+
+        # Clear and rebuild the grid
+        grid = self.query_one("#tables-grid", Vertical)
+        grid.remove_children()
+
+        # Group tables by row
+        rows = {}
+        for table in self.tables:
+            row = table["row"]
+            if row not in rows:
+                rows[row] = []
+            rows[row].append(table)
+
+        # Create rows
+        for row_num in sorted(rows.keys()):
+            row_container = Horizontal(classes="table-row")
+            grid.mount(row_container)
+
+            # Sort by column within row
+            for table in sorted(rows[row_num], key=lambda t: t["col"]):
+                btn_class = "table-btn table-occupied" if table.get("occupied") else "table-btn table-free"
+                total_text = f"\n{table.get('total', 0):.0f} RSD" if table.get("total", 0) > 0 else "\nSlobodan"
+                btn = Button(
+                    f"{table['name']}{total_text}",
+                    id=f"table-{table['id']}",
+                    classes=btn_class
+                )
+                row_container.mount(btn)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle table button clicks"""
@@ -241,27 +254,18 @@ class RestaurantScreen(Screen):
             table = next((t for t in self.tables if t["id"] == table_id), None)
             if table:
                 self.app.push_screen(
-                    TableOrderScreen(table, self.app.pos),
+                    TableOrderScreen(table, self.app.table_service),
                     self.handle_table_closed
                 )
 
     def handle_table_closed(self, result: dict) -> None:
         """Handle when table order screen is closed"""
-        if result:
-            # Update table data from result
-            table_id = result.get("table_id")
-            for table in self.tables:
-                if table["id"] == table_id:
-                    table["total"] = result.get("total", 0.0)
-                    table["occupied"] = result.get("occupied", False)
-                    break
-            self.refresh_tables()
+        # Always refresh from database
+        self.load_tables()
 
     def refresh_tables(self) -> None:
-        """Refresh table display - will reload from DB later"""
-        # For now, just remount to refresh the display
-        self.app.pop_screen()
-        self.app.push_screen(RestaurantScreen())
+        """Refresh table display from database"""
+        self.load_tables()
 
     def action_back(self) -> None:
         """Go back - for restaurant this logs out"""
@@ -271,7 +275,7 @@ class RestaurantScreen(Screen):
         """Open table management (admin only)"""
         if self.app.require_admin("Upravljanje stolovima"):
             self.app.push_screen(
-                TableManagementScreen(self.tables),
+                TableManagementScreen(self.app.table_service),
                 self.handle_tables_updated
             )
 
@@ -282,13 +286,13 @@ class RestaurantScreen(Screen):
 
     def action_refresh(self) -> None:
         """Refresh table display"""
-        self.refresh_tables()
+        self.load_tables()
+        self.notify("Osveženo!", severity="information")
 
-    def handle_tables_updated(self, updated_tables: list) -> None:
+    def handle_tables_updated(self, result) -> None:
         """Handle when tables are updated from management screen"""
-        if updated_tables:
-            self.tables = updated_tables
-            self.refresh_tables()
+        # Always refresh from database
+        self.load_tables()
 
 
 class TableManagementScreen(Screen):
@@ -339,11 +343,10 @@ class TableManagementScreen(Screen):
         Binding("a", "toggle_active", "Aktiviraj/Deaktiviraj"),
     ]
 
-    def __init__(self, tables: list):
+    def __init__(self, table_service):
         super().__init__()
-        # Copy tables to avoid modifying original until save
-        self.tables = [t.copy() for t in tables]
-        self.changed = False
+        self.table_service = table_service
+        self.tables = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -368,19 +371,22 @@ class TableManagementScreen(Screen):
         self.load_tables()
 
     def load_tables(self) -> None:
-        """Load tables into DataTable"""
+        """Load tables from database"""
         table = self.query_one("#tables-list", DataTable)
         table.clear()
 
+        # Get tables from database
+        self.tables = self.table_service.get_all_tables()
+
         # Sort by row, then column
-        sorted_tables = sorted(self.tables, key=lambda t: (t["row"], t["col"]))
+        sorted_tables = sorted(self.tables, key=lambda t: (t.get("position_row", 0), t.get("position_col", 0)))
 
         for t in sorted_tables:
             table.add_row(
                 str(t["id"]),
                 t["name"],
-                str(t["row"]),
-                str(t["col"]),
+                str(t.get("position_row", 0)),
+                str(t.get("position_col", 0)),
                 str(t.get("capacity", 4)),
                 "DA" if t.get("is_active", True) else "NE"
             )
@@ -411,20 +417,18 @@ class TableManagementScreen(Screen):
 
     def action_new_table(self) -> None:
         """Add new table"""
-        # Find next available ID
-        max_id = max((t["id"] for t in self.tables), default=0)
+        # Find next table number for default name
+        max_num = len(self.tables) + 1
         new_table = {
-            "id": max_id + 1,
-            "name": f"Sto {max_id + 1}",
-            "row": 0,
-            "col": 0,
+            "id": 0,  # Will be assigned by database
+            "name": f"Sto {max_num}",
+            "position_row": 0,
+            "position_col": 0,
             "capacity": 4,
-            "is_active": True,
-            "total": 0.0,
-            "occupied": False
+            "is_active": True
         }
         self.app.push_screen(
-            AddEditTableScreen(new_table, is_new=True),
+            AddEditTableScreen(new_table, self.table_service, is_new=True),
             self.handle_table_saved
         )
 
@@ -433,7 +437,7 @@ class TableManagementScreen(Screen):
         table = self.get_selected_table()
         if table:
             self.app.push_screen(
-                AddEditTableScreen(table.copy(), is_new=False),
+                AddEditTableScreen(table.copy(), self.table_service, is_new=False),
                 self.handle_table_saved
             )
         else:
@@ -441,18 +445,7 @@ class TableManagementScreen(Screen):
 
     def handle_table_saved(self, result: dict) -> None:
         """Handle saved table from AddEditTableScreen"""
-        if result:
-            table_id = result["id"]
-            existing = next((t for t in self.tables if t["id"] == table_id), None)
-
-            if existing:
-                # Update existing
-                existing.update(result)
-            else:
-                # Add new
-                self.tables.append(result)
-
-            self.changed = True
+        if result and result.get("saved"):
             self.load_tables()
             self.notify("Sto sačuvan!", severity="success")
 
@@ -460,11 +453,12 @@ class TableManagementScreen(Screen):
         """Toggle table active status"""
         table = self.get_selected_table()
         if table:
-            table["is_active"] = not table.get("is_active", True)
-            status = "aktiviran" if table["is_active"] else "deaktiviran"
-            self.changed = True
-            self.load_tables()
-            self.notify(f"Sto {status}!", severity="success")
+            success, msg = self.table_service.toggle_table_active(table["id"])
+            if success:
+                self.load_tables()
+                self.notify(msg, severity="success")
+            else:
+                self.notify(msg, severity="error")
         else:
             self.notify("Izaberite sto!", severity="warning")
 
@@ -472,23 +466,18 @@ class TableManagementScreen(Screen):
         """Delete selected table"""
         table = self.get_selected_table()
         if table:
-            if table.get("occupied", False):
-                self.notify("Ne možete obrisati zauzet sto!", severity="error")
-                return
-
-            self.tables = [t for t in self.tables if t["id"] != table["id"]]
-            self.changed = True
-            self.load_tables()
-            self.notify(f"Sto '{table['name']}' obrisan!", severity="warning")
+            success, msg = self.table_service.delete_table(table["id"])
+            if success:
+                self.load_tables()
+                self.notify(msg, severity="warning")
+            else:
+                self.notify(msg, severity="error")
         else:
             self.notify("Izaberite sto!", severity="warning")
 
     def action_close(self) -> None:
-        """Close and return updated tables"""
-        if self.changed:
-            self.dismiss(self.tables)
-        else:
-            self.dismiss(None)
+        """Close screen"""
+        self.dismiss({"updated": True})
 
 
 class AddEditTableScreen(Screen):
@@ -550,9 +539,10 @@ class AddEditTableScreen(Screen):
         Binding("escape", "cancel", "Odustani"),
     ]
 
-    def __init__(self, table: dict, is_new: bool = False):
+    def __init__(self, table: dict, table_service, is_new: bool = False):
         super().__init__()
         self.table = table
+        self.table_service = table_service
         self.is_new = is_new
 
     def compose(self) -> ComposeResult:
@@ -567,11 +557,11 @@ class AddEditTableScreen(Screen):
             with Horizontal(id="form-row"):
                 with Vertical(classes="half-input"):
                     yield Label("Red (0-9):", classes="form-label")
-                    yield Input(value=str(self.table.get("row", 0)), id="row-input", type="integer")
+                    yield Input(value=str(self.table.get("position_row", 0)), id="row-input", type="integer")
 
                 with Vertical(classes="half-input"):
                     yield Label("Kolona (0-9):", classes="form-label")
-                    yield Input(value=str(self.table.get("col", 0)), id="col-input", type="integer")
+                    yield Input(value=str(self.table.get("position_col", 0)), id="col-input", type="integer")
 
             yield Label("Kapacitet (broj mesta):", classes="form-label")
             yield Input(value=str(self.table.get("capacity", 4)), id="capacity-input", type="integer")
@@ -592,7 +582,7 @@ class AddEditTableScreen(Screen):
             self.action_cancel()
 
     def action_save(self) -> None:
-        """Save table"""
+        """Save table to database"""
         name = self.query_one("#name-input", Input).value.strip()
         row_str = self.query_one("#row-input", Input).value.strip()
         col_str = self.query_one("#col-input", Input).value.strip()
@@ -620,17 +610,20 @@ class AddEditTableScreen(Screen):
             self.notify("Unesite ispravne brojeve!", severity="error")
             return
 
-        # Update table data
-        self.table["name"] = name
-        self.table["row"] = row
-        self.table["col"] = col
-        self.table["capacity"] = capacity
+        # Save to database
+        if self.is_new:
+            success, msg, table_id = self.table_service.create_table(name, row, col, capacity)
+        else:
+            success, msg = self.table_service.update_table(self.table["id"], name, row, col, capacity)
 
-        self.dismiss(self.table)
+        if success:
+            self.dismiss({"saved": True})
+        else:
+            self.notify(msg, severity="error")
 
     def action_cancel(self) -> None:
         """Cancel without saving"""
-        self.dismiss(None)
+        self.dismiss({"saved": False})
 
 
 class TableOrderScreen(Screen):
@@ -709,18 +702,12 @@ class TableOrderScreen(Screen):
         Binding("p", "print_order", "Porudžbina"),
     ]
 
-    def __init__(self, table: dict, pos_service):
+    def __init__(self, table: dict, table_service):
         super().__init__()
         self.table = table
-        self.pos = pos_service
-        # Mock orders for this table - will be from DB later
+        self.table_service = table_service
+        self.session_id = None
         self.orders = []
-        if table["occupied"]:
-            # Add some mock orders for occupied tables
-            self.orders = [
-                {"id": 1, "item": "Pivo", "quantity": 2, "price": 250.0},
-                {"id": 2, "item": "Ćevapi", "quantity": 1, "price": 800.0},
-            ]
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -750,7 +737,12 @@ class TableOrderScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        """Setup tables"""
+        """Setup tables and open/get session"""
+        # Get or create session for this table
+        waiter_id = self.app.current_user.get('id') if self.app.current_user else None
+        success, msg, session_id = self.table_service.open_table(self.table['id'], waiter_id)
+        self.session_id = session_id
+
         # Setup menu table
         menu_table = self.query_one("#menu-table", DataTable)
         menu_table.add_columns("ID", "Artikal", "Cena")
@@ -759,7 +751,7 @@ class TableOrderScreen(Screen):
 
         # Setup order table
         order_table = self.query_one("#order-table", DataTable)
-        order_table.add_columns("Artikal", "Kol.", "Cena", "Ukupno")
+        order_table.add_columns("ID", "Artikal", "Kol.", "Cena", "Ukupno")
         order_table.cursor_type = "row"
         self.load_orders()
 
@@ -768,7 +760,7 @@ class TableOrderScreen(Screen):
         menu_table = self.query_one("#menu-table", DataTable)
         menu_table.clear()
 
-        items = self.pos.inventory.get_all()
+        items = self.table_service.inventory.get_all()
         for item in items:
             if search.lower() in item["item"].lower() or search in str(item.get("barcode", "")):
                 menu_table.add_row(
@@ -778,24 +770,29 @@ class TableOrderScreen(Screen):
                 )
 
     def load_orders(self) -> None:
-        """Load current orders for this table"""
+        """Load current orders from database"""
         order_table = self.query_one("#order-table", DataTable)
         order_table.clear()
 
+        if self.session_id:
+            self.orders = self.table_service.get_table_orders(self.session_id)
+
         for order in self.orders:
-            total = order["quantity"] * order["price"]
             order_table.add_row(
-                order["item"],
+                str(order["id"]),
+                order["item_name"],
                 str(order["quantity"]),
-                f"{order['price']:.2f}",
-                f"{total:.2f}"
+                f"{order['unit_price']:.2f}",
+                f"{order['total_price']:.2f}"
             )
 
         self.update_total()
 
     def calculate_total(self) -> float:
         """Calculate total for all orders"""
-        return sum(o["quantity"] * o["price"] for o in self.orders)
+        if self.session_id:
+            return self.table_service.get_table_total(self.session_id)
+        return 0.0
 
     def update_total(self) -> None:
         """Update total display"""
@@ -824,40 +821,41 @@ class TableOrderScreen(Screen):
 
     def action_add_item(self) -> None:
         """Add selected menu item to order"""
+        if not self.session_id:
+            self.notify("Greška: sesija nije otvorena!", severity="error")
+            return
+
         menu_table = self.query_one("#menu-table", DataTable)
         if menu_table.cursor_row is not None:
             row = menu_table.get_row_at(menu_table.cursor_row)
             item_id = int(row[0])
             item_name = row[1]
-            item_price = float(row[2])
 
-            # Check if item already in order
-            existing = next((o for o in self.orders if o["item"] == item_name), None)
-            if existing:
-                existing["quantity"] += 1
+            # Add to database
+            success, msg = self.table_service.add_order(self.session_id, item_id)
+
+            if success:
+                self.load_orders()
+                self.notify(msg, severity="information")
             else:
-                self.orders.append({
-                    "id": item_id,
-                    "item": item_name,
-                    "quantity": 1,
-                    "price": item_price
-                })
-
-            self.load_orders()
-            self.table["occupied"] = True
-            self.notify(f"Dodato: {item_name}", severity="information")
+                self.notify(msg, severity="error")
 
     def action_remove_item(self) -> None:
         """Remove selected item from order"""
         order_table = self.query_one("#order-table", DataTable)
         if order_table.cursor_row is not None and self.orders:
             if order_table.cursor_row < len(self.orders):
-                removed = self.orders.pop(order_table.cursor_row)
-                self.load_orders()
-                self.notify(f"Uklonjeno: {removed['item']}", severity="warning")
+                order = self.orders[order_table.cursor_row]
+                order_id = order['id']
 
-                if not self.orders:
-                    self.table["occupied"] = False
+                # Remove from database
+                success, msg = self.table_service.remove_order(order_id)
+
+                if success:
+                    self.load_orders()
+                    self.notify(msg, severity="warning")
+                else:
+                    self.notify(msg, severity="error")
 
     def action_print_order(self) -> None:
         """Print order ticket for kitchen/bar"""
@@ -865,19 +863,15 @@ class TableOrderScreen(Screen):
             self.notify("Nema porudžbina za štampu!", severity="warning")
             return
 
-        # Generate order ticket text
-        ticket = []
-        ticket.append("=" * 32)
-        ticket.append(f"PORUDŽBINA - {self.table['name']}".center(32))
-        ticket.append("=" * 32)
-        ticket.append("")
+        # Generate order ticket using service
+        ticket = self.table_service.generate_order_ticket(self.session_id)
 
+        # Mark orders as 'preparing'
         for order in self.orders:
-            ticket.append(f"{order['quantity']}x {order['item']}")
+            if order.get('status') == 'ordered':
+                self.table_service.update_order_status(order['id'], 'preparing')
 
-        ticket.append("")
-        ticket.append("=" * 32)
-
+        self.load_orders()
         self.notify("Porudžbina poslata u kuhinju!", severity="success")
         # TODO: Show ticket in a viewer or send to printer
 
@@ -887,25 +881,18 @@ class TableOrderScreen(Screen):
             self.notify("Nema porudžbina za naplatu!", severity="warning")
             return
 
-        # For now, just show total and close
-        total = self.calculate_total()
-        self.notify(f"Račun: {total:.2f} RSD - Sto zatvoren!", severity="success")
+        # Close session via service
+        success, msg = self.table_service.close_table(self.session_id)
 
-        # Return result to parent
-        self.dismiss({
-            "table_id": self.table["id"],
-            "total": 0.0,  # Reset after payment
-            "occupied": False
-        })
+        if success:
+            self.notify(msg, severity="success")
+            self.dismiss({"closed": True})
+        else:
+            self.notify(msg, severity="error")
 
     def action_back(self) -> None:
-        """Go back to table grid"""
-        # Return current state
-        self.dismiss({
-            "table_id": self.table["id"],
-            "total": self.calculate_total(),
-            "occupied": len(self.orders) > 0
-        })
+        """Go back to table grid (keep table open)"""
+        self.dismiss({"closed": False})
 
 
 class CustomerManagementScreen(Screen):
@@ -4693,6 +4680,11 @@ class POSApp(App):
         unified_sales_repo = UnifiedSalesRepository(db)
         invoice_repo = InvoiceRepository(db)
 
+        # Restaurant mode repositories
+        table_repo = TableRepository(db)
+        session_repo = TableSessionRepository(db)
+        order_repo = TableOrderRepository(db)
+
         self.pos = POSService(
             inv_repo,
             sales_repo,
@@ -4710,6 +4702,9 @@ class POSApp(App):
         self.customer_repo = customer_repo
         self.unified_sales = unified_sales_repo  # Store for direct access if needed
         self.invoice_repo = invoice_repo  # Store for otpremnice screen
+
+        # Restaurant mode service
+        self.table_service = TableService(table_repo, session_repo, order_repo, inv_repo)
 
         # Current logged in user
         self.current_user = None
