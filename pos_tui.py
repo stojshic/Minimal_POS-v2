@@ -24,70 +24,6 @@ from config import STORE_CONFIG, CONFIG
 USER = ""
 
 
-class ConfirmDialog(Screen):
-    """Generic confirmation dialog"""
-    
-    CSS = """
-    ConfirmDialog {
-        align: center middle;
-    }
-    
-    #confirm-dialog {
-        width: 50;
-        height: auto;
-        border: thick $error;
-        background: $surface;
-        padding: 2;
-    }
-    
-    #message {
-        padding: 2;
-        text-align: center;
-    }
-    
-    #buttons {
-        layout: horizontal;
-        height: auto;
-        margin-top: 1;
-        align: center middle;
-    }
-    """
-    
-    BINDINGS = [
-        Binding("y", "confirm", "Yes"),
-        Binding("n", "cancel", "No"),
-        Binding("escape", "cancel", "Cancel"),
-    ]
-    
-    def __init__(self, message: str, title: str = "POTVRDA"):
-        super().__init__()
-        self.message = message
-        self.title = title
-    
-    def compose(self) -> ComposeResult:  # ← No parameters here!
-        with Vertical(id="confirm-dialog"):
-            yield Label(f"🟡  {self.title}", classes="label")
-            yield Static(self.message, id="message")
-            
-            with Horizontal(id="buttons"):
-                yield Button("Da \\[D]", id="yes-btn", variant="error")
-                yield Button("Ne \\[N]", id="no-btn", variant="success")
-    
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "yes-btn":
-            self.action_confirm()
-        elif event.button.id == "no-btn":
-            self.action_cancel()
-    
-    def action_confirm(self) -> None:
-        """User confirmed"""
-        self.dismiss(True)
-    
-    def action_cancel(self) -> None:
-        """User cancelled"""
-        self.dismiss(False)
-
-
 class LoginScreen(Screen):
     """Login screen - first screen shown"""
 
@@ -771,118 +707,6 @@ class CustomerSelectScreen(Screen):
     def action_cancel(self) -> None:
         """Cancel selection"""
         self.dismiss(None)
-
-
-class RefundsHistoryScreen(Screen):
-    """View refund history"""
-    
-    CSS = """
-    RefundsHistoryScreen {
-        background: $surface;
-    }
-    
-    #history-container {
-        height: 100%;
-        padding: 1;
-    }
-    
-    #refunds-table {
-        height: 1fr;
-        border: solid $warning;
-    }
-    
-    #controls {
-        dock: bottom;
-        height: auto;
-        layout: horizontal;
-        background: $panel;
-        padding: 1;
-    }
-    """
-    
-    BINDINGS = [
-        Binding("escape", "close", "Close"),
-    ]
-    
-    def __init__(self, refund_service):
-        super().__init__()
-        self.refund_service = refund_service
-    
-    def compose(self) -> ComposeResult:
-        with Vertical(id="history-container"):
-            yield Label("📋 ISTORIJA POVRAĆAJA", classes="label")
-            
-            with Horizontal():
-                yield Input(
-                    placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
-                    id="date-input"
-                )
-                yield Button("Prikaži", id="show-btn", variant="primary")
-            
-            yield DataTable(id="refunds-table")
-            
-            with Horizontal(id="controls"):
-                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-    
-    def on_mount(self) -> None:
-        from datetime import datetime
-        
-        table = self.query_one("#refunds-table", DataTable)
-        table.add_columns("ID", "Artikal", "Količina", "Iznos", "Metoda", "Razlog", "Vreme")
-        
-        today = datetime.now().strftime("%Y-%m-%d")
-        self.query_one("#date-input", Input).value = today
-        self.load_refunds(today)
-    
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "show-btn":
-            self.load_from_input()
-        elif event.button.id == "close-btn":
-            self.action_close()
-    
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "date-input":
-            event.stop()
-            self.load_from_input()
-    
-    def load_from_input(self) -> None:
-        date = self.query_one("#date-input", Input).value.strip()
-        self.load_refunds(date)
-    
-    def load_refunds(self, date: str) -> None:
-        from datetime import datetime
-        
-        if not date:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        refunds = self.refund_service.refunds.get_refunds_by_date(date)
-        
-        table = self.query_one("#refunds-table", DataTable)
-        table.clear()
-        
-        if not refunds:
-            self.notify(f"Nema povraćaja za {date}", severity="information")
-            return
-        
-        for refund in refunds:
-            table.add_row(
-                str(refund['id']),
-                refund['item'],
-                f"{refund['quantity']:.2f}",
-                f"{refund['refund_amount']:.2f}",
-                refund['refund_method'].upper(),
-                refund['reason'] or "-",
-                refund['created_at']
-            )
-        
-        total = sum(r['refund_amount'] for r in refunds)
-        self.notify(
-            f"Učitano {len(refunds)} povraćaja | Ukupno: {total:.2f} RSD",
-            severity="information"
-        )
-    
-    def action_close(self) -> None:
-        self.dismiss()
 
 
 class UserManagementScreen(Screen):
@@ -4047,7 +3871,7 @@ class POSApp(App):
         Binding("f4", "reports", "Izveštaji", show=True),
         Binding("f5", "checkout", "Naplati", show=True),
         Binding("f6", "otpremnice", "Otpremnice", show=True),
-        Binding("f7", "sales_history", "Prethodni račini", show=True),
+        Binding("f7", "sales_history", "Prethodni računi", show=True),
         Binding("f8", "user_management", "Korisnici", show=True),
         Binding("f9", "logout", "Izlaz", show=True),
         Binding("f10", "customers", "Kupci", show=True),
@@ -5020,14 +4844,14 @@ class SalesHistoryScreen(Screen):
             customer_info = customer_repo.get_by_id(sale['customer_id'])
 
         # Build receipt text - either from stored or regenerate
+        # Add reprint header receipt
+        reprint_header = [
+            "=" * 40,
+            "*** PONOVLJEN RAČUN ***".center(40),
+            "=" * 40,
+            ""
+        ]
         if sale.get('receipt_text'):
-            # Add reprint header to stored receipt
-            reprint_header = [
-                "=" * 40,
-                "*** PONOVLJEN RAČUN ***".center(40),
-                "=" * 40,
-                ""
-            ]
             receipt_text = "\n".join(reprint_header) + sale['receipt_text']
         else:
             # Regenerate receipt if not stored
@@ -5062,7 +4886,7 @@ class SalesHistoryScreen(Screen):
                 'customer_info': customer_info
             }
 
-            receipt_text = "*** PONOVLJEN RAČUN ***\n\n" + printer.generate_receipt(receipt_data)
+            receipt_text = "\n".join(reprint_header) + printer.generate_receipt(receipt_data)
 
         # Prepare sale_data for ReceiptViewerScreen
         viewer_sale_data = {
@@ -5650,222 +5474,6 @@ class RefundConfirmScreen(Screen):
         else:
             self.notify(f"Povraćaj: {success_count} uspešnih, {fail_count} neuspešnih", severity="warning")
             self.dismiss(True)
-
-
-class eefundsScreen(Screen):
-    """Screen for processing returns and refunds"""
-
-    CSS = """
-        RefundsScreen {
-            background: $surface;
-        }
-        
-        #refunds-container {
-            height: 100%;
-            padding: 1;
-        }
-        
-        #search-section {
-            height: auto;
-            background: $panel;
-            padding: 1;
-            margin-bottom: 1;
-        }
-        
-        #search-row {
-            layout: horizontal;
-            height: auto;
-        }
-        
-        #sales-table {
-            height: 1fr;
-            border: solid $primary;
-            margin: 1 0;
-        }
-        
-        #controls {
-            dock: bottom;
-            height: auto;
-            layout: horizontal;
-            background: $panel;
-            padding: 1;
-        }
-    """ 
-    BINDINGS = [
-        Binding("escape", "close", "Close"),
-        Binding("r", "process_refund", "Refund"),
-        Binding("h", "view_history", "History"),
-        Binding("a", "refund_receipt", "Refund All")
-    ]
-    
-    def __init__(self, pos_service, refund_service, current_user):
-        super().__init__()
-        self.pos_service = pos_service
-        self.refund_service = refund_service
-        self.current_user = current_user
-    
-    def compose(self) -> ComposeResult:
-        with Vertical(id="refunds-container"):
-            yield Label("↩️  POVRAĆAJ ROBE", classes="label")
-            
-            with Vertical(id="search-section"):
-                yield Label("Pretraga prodaja:")
-                with Horizontal(id="search-row"):
-                    yield Input(
-                        placeholder="Datum (YYYY-MM-DD) ili Enter za danas",
-                        id="date-input"
-                    )
-                    yield Button("Pretraži", id="search-btn", variant="primary")
-            
-            yield Label("Nedavne prodaje:")
-            yield DataTable(id="sales-table")  # ← Make sure this ID matches!
-            
-            with Horizontal(id="controls"):
-                yield Button("Povraćaj stavke \\[R]", id="refund-btn", variant="warning")
-                yield Button("Povraćaj računa \\[A]", id="refund-all-btn", variant="error")
-                yield Button("Istorija \\[H]", id="history-btn", variant="default")
-                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-        yield Footer()
-
-    def on_mount(self) -> None:
-        """Setup and load today's sales"""
-        from datetime import datetime
-
-        # Setup table
-        try:
-            table = self.query_one("#sales-table", DataTable)
-            table.add_columns("ID", "Artikal", "Količina", "Cena", "Ukupno", "Vreme")
-            table.cursor_type = "row"
-        except Exception as e:
-            self.notify(f"Error setting up table: {e}", severity="error")
-            return
-        
-        # Load today's sales
-        today = datetime.now().strftime("%Y-%m-%d")
-        self.query_one("#date-input", Input).value = today
-        self.load_sales(today)
-    
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "search-btn":
-            self.search_sales()
-        elif event.button.id == "refund-btn":
-            self.action_process_refund()
-        elif event.button.id == "close-btn":
-            self.action_close()
-        elif event.button.id == "history-btn":
-            self.action_view_history()
-        elif event.button.id == "refund-all-btn":
-            self.action_refund_receipt()
-
-    def action_view_history(self) -> None:
-        """View refunds history"""
-        self.app.push_screen(RefundsHistoryScreen(self.refund_service))
-    
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "date-input":
-            event.stop()
-            self.search_sales()
-    
-    def search_sales(self) -> None:
-        """Search sales by date"""
-        date = self.query_one("#date-input", Input).value.strip()
-        if date:
-            self.load_sales(date)
-    
-    def load_sales(self, date: str) -> None:
-        """Load sales for given date"""
-        from datetime import datetime
-        
-        if not date:
-            date = datetime.now().strftime("%Y-%m-%d")
-        
-        sales = self.pos_service.sales.get_sales_by_date(date)
-        
-        table = self.query_one("#sales-table", DataTable)
-        table.clear()
-        
-        if not sales:
-            self.notify(f"Nema prodaja za {date}", severity="information")
-            return
-        
-        for sale in sales:
-            table.add_row(
-                str(sale['id']),
-                sale['item'],
-                f"{sale['quantity']:.2f}",
-                f"{sale['item_price']:.2f}",
-                f"{sale['total']:.2f}",
-                sale['time']
-            )
-        
-        self.notify(f"Učitano {len(sales)} prodaja", severity="information")
-    
-    def action_process_refund(self) -> None:
-        """Process refund for selected sale"""
-        table = self.query_one("#sales-table", DataTable)
-        
-        if table.cursor_row is None:
-            self.notify("Izaberite prodaju!", severity="warning")
-            return
-        
-        row = table.get_row_at(table.cursor_row)
-        sale_id = int(row[0])
-        item_name = row[1]
-        quantity_sold = float(row[2])
-        price = float(row[3])
-        
-        # Open refund dialog
-        self.app.push_screen(
-            ProcessRefundScreen(
-                sale_id=sale_id,
-                item_name=item_name,
-                quantity_sold=quantity_sold,
-                price=price,
-                refund_service=self.refund_service,
-                user_id=self.current_user['id']
-            ),
-            self.handle_refund_processed
-        )
-    
-    def handle_refund_processed(self, result) -> None:
-        """Callback after refund is processed"""
-        if result:
-            # Reload sales
-            date = self.query_one("#date-input", Input).value.strip()
-            self.load_sales(date)
-
-    def action_refund_receipt(self) -> None:
-        """Refund entire receipt"""
-        table = self.query_one("#sales-table", DataTable)
-
-        if table.cursor_row is None:
-            self.notify("Izaberite prodaju!", severity="warning")
-            return
-
-        row = table.get_row_at(table.cursor_row)
-        sale_id = int(row[0])
-
-        # Get receipt for this sale
-        receipt_data = self.pos_service.receipts.get_receipt_by_sale_id(sale_id)
-
-        if not receipt_data:
-            self.notify("Račun nije pronađen!", severity="error")
-            return
-
-        # Show receipt refund dialog
-        self.app.push_screen(
-            RefundReceiptScreen(
-                sale_id=sale_id,
-                receipt_number=receipt_data['receipt_number'],
-                refund_service=self.refund_service,
-                pos_service=self.pos_service,
-                user_id=self.current_user['id']
-            ),
-            self.handle_refund_processed
-        )
-
-    def action_close(self) -> None:
-        self.dismiss()
 
 
 class RefundReceiptScreen(Screen):
