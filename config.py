@@ -4,10 +4,11 @@ Store this info or load from settings file
 """
 
 STORE_CONFIG = {
-    "name": "Moja Prodavnica", # Your store name
-    "address": "Dejana Brankova 26, Bela Crkva", # Store address
-    "pib": "123123123", # Your PIB
-    'pfr_number': "PFR-001", # Fiscal device number
+    "store_type": "shop",  # "shop" for retail POS, "restaurant" for table-based service
+    "name": "Moja Prodavnica",  # Your store name
+    "address": "Dejana Brankova 26, Bela Crkva",  # Store address
+    "pib": "123123123",  # Your PIB
+    "pfr_number": "PFR-001",  # Fiscal device number
     "cashier": "Kasir 1",
 }
 
