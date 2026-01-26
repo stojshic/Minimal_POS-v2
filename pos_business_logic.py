@@ -1056,7 +1056,8 @@ class TableService:
         for table in tables:
             if table.get('session_id'):
                 table['total'] = self.orders.get_session_total(table['session_id'])
-                table['occupied'] = True
+                # Only mark as occupied if there are actual orders (total > 0)
+                table['occupied'] = table['total'] > 0
             else:
                 table['total'] = 0.0
                 table['occupied'] = False

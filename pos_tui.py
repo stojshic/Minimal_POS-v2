@@ -719,12 +719,12 @@ class TableOrderScreen(Screen):
                 with Vertical(id="menu-panel"):
                     yield Label("📋 MENI", classes="panel-label")
                     yield Input(placeholder="Pretraga artikala...", id="search-input")
-                    yield DataTable(id="menu-table")
+                    yield DataTable(id="menu-table", zebra_stripes=True)
 
                 # Right panel - Current orders
                 with Vertical(id="order-panel"):
                     yield Label("📝 PORUDŽBINA", classes="panel-label")
-                    yield DataTable(id="order-table")
+                    yield DataTable(id="order-table", zebra_stripes=True)
                     yield Static(f"UKUPNO: {self.calculate_total():.2f} RSD", id="order-total")
 
             with Horizontal(id="controls"):
@@ -803,6 +803,11 @@ class TableOrderScreen(Screen):
         """Handle search input"""
         if event.input.id == "search-input":
             self.load_menu(event.value)
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter/double-click on menu table to add item"""
+        if event.data_table.id == "menu-table":
+            self.action_add_item()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button clicks"""
@@ -891,7 +896,10 @@ class TableOrderScreen(Screen):
             self.notify(msg, severity="error")
 
     def action_back(self) -> None:
-        """Go back to table grid (keep table open)"""
+        """Go back to table grid"""
+        # If no orders, close the empty session to keep table "free"
+        if not self.orders and self.session_id:
+            self.table_service.close_table(self.session_id)
         self.dismiss({"closed": False})
 
 
