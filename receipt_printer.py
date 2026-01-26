@@ -174,13 +174,6 @@ class FiscalReceipt:
 
         return "\n".join(receipt)
 
-    def print_receipt(self, receipt_text: str):
-        """
-        Print receipt to printer or display
-        In production, this would send to thermal printer
-        """
-        print("\n" + receipt_text + "\n")
-
 
 class OrderTicketPrinter:
     """Generates order tickets for kitchen and bar"""

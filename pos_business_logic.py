@@ -241,41 +241,6 @@ class POSService:
         """
         return self.inventory.get_by_barcode(barcode)
 
-    def sell_item_by_barcode(self, barcode: str, quantity: float = 1.0,
-                             payment_info: Optional[PaymentInfo] = None,
-                             allow_oversell: bool = False) -> SaleResult:
-        """
-        Sell item using barcode instead of ID
-
-        Args:
-            barcode: Scanned barcode
-            quantity: How many to sell (default 1)
-            payment_info: Payment details (required for sale)
-            allow_oversell: Allow selling when out of stock
-
-        Returns:
-            SaleResult with success/failure info
-        """
-        item = self.inventory.get_by_barcode(barcode)
-
-        if not item:
-            return SaleResult(
-                success=False,
-                message=f"Barcode '{barcode}' not found in system"
-            )
-
-        if not payment_info:
-            return SaleResult(
-                success=False,
-                message="Payment info is required"
-            )
-
-        return self.sell_items(
-            items=[{'id': item['id'], 'quantity': quantity}],
-            payment_info=payment_info,
-            allow_oversell=allow_oversell
-        )
-
     def search_sales(self, search_term: str) -> List[dict]:
         """Search sales history"""
         return self.sales.search_sales(search_term)
@@ -283,43 +248,6 @@ class POSService:
     def get_recent_sales(self, limit: int = 10) -> List[dict]:
         """Get recent sales"""
         return self.sales.get_recent_sales(limit)
-    
-    def find_or_create_inventory_item(self, item_name: str) -> Tuple[Optional[int], List[dict]]:
-        """
-        Search for existing item by name
-        Returns: (suggested_id, matching_items)
-        """
-        matches = self.inventory.search(item_name)
-        
-        if len(matches) == 1:
-            # Exact or close match - suggest it
-            return matches[0]['id'], matches
-        
-        return None, matches
-    
-    def add_or_update_inventory(
-        self, 
-        item_name: str, 
-        price: float, 
-        quantity: float,
-        item_id: Optional[int] = None,
-        barcode: Optional[str] = None
-    ) -> Tuple[bool, str, int]:
-        """
-        Add new item or update existing
-        
-        Returns: (success, message, item_id)
-        """
-        if item_id:
-            # Update existing item
-            success = self.inventory.update(item_id, price, quantity)
-            if success:
-                return True, f"Updated {item_name}", item_id
-            return False, f"Failed to update item {item_id}", item_id
-        else:
-            # Add new item
-            new_id = self.inventory.add(item_name, price, quantity, barcode)
-            return True, f"Added new item: {item_name}", new_id
     
     def create_invoice_from_items(
         self, 
@@ -373,47 +301,6 @@ class POSService:
     def get_invoice_details(self, invoice_id: int) -> Optional[dict]:
         """Get complete invoice details"""
         return self.invoices.get_invoice_details(invoice_id)
-
-    def generate_and_print_receipt(self, sale_id: int, item_data: dict, payment_info: PaymentInfo) -> str:
-        """
-        Generate fiscal receipt for a sale
-
-        Args:
-            sale_id: ID of the sale
-            item_data: Item details (name, price, quantity, vat_rate)
-            payment_info: Payment information
-
-        Returns:
-            Receipt text
-        """
-        timestamp = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-
-        # Prepare sale data for receipt
-        sale_data = {
-            'sale_id': sale_id,
-            'timestamp': timestamp,
-            'items': [item_data],  # Single item (can extend to multiple items per sale)
-            'payment_info': {
-                'payment_type': payment_info.payment_type,
-                'cash_amount': payment_info.cash_amount,
-                'card_amount': payment_info.card_amount,
-                'amount_tendered': payment_info.amount_tendered,
-                'change_given': payment_info.change_given,
-            }
-        }
-
-        # Generate receipt
-        receipt_text = self.fiscal_printer.generate_receipt(sale_data)
-
-        # Save to database
-        self.receipts.save_receipt(
-            sale_id=sale_id,
-            receipt_number=self.fiscal_printer.receipt_counter - 1,  # Counter already incremented
-            receipt_text=receipt_text
-        )
-
-        return receipt_text
-
 
 class ReportService:
     """Service for generating reports"""
@@ -904,47 +791,9 @@ class UserService:
         else:
             return False, None, "Pogrešno korisničko ime ili lozinka!"
 
-    def create_cashier(self, username: str, password: str, full_name: str) -> Tuple[bool, str]:
-        """
-        Create new cashier user (admin only)
-
-        Returns:
-            (success, message)
-        """
-        if len(password) < 3:
-            return False, "Lozinka mora imati najmanje 3 karaktera"
-
-        try:
-            user_id = self.users.create_user(username, password, full_name, "cashier")
-            return True, f"Korisnik {username} uspešno kreiran"
-        except Exception as e:
-            return False, f"Greška: {str(e)}"
-
     def get_all_users(self) -> List[dict]:
         """Get all users (admin only)"""
         return self.users.get_all_users()
-
-    def change_password(self, user_id: str, old_password: str, new_password: str) -> Tuple[bool, str]:
-        """
-        Change user's own password
-
-        Returns:
-            (success, message)
-        """
-        if len(new_password) < 3:
-            return False, "Lozinka mora imati najmanje 3 karaktera"
-
-        # Verify old passowrd first
-        # TODO: Add Verification
-
-        success = self.users.update_password(user_id, new_password)
-        if success:
-            return True, "Lozinka uspešno promenjena"
-        else:
-            return False, "Greška pri promeni lozinke"
-
-
-    # In pos_business_logic.py, UserService class
 
     def delete_user(self, user_id: int) -> Tuple[bool, str]:
         """
@@ -1143,10 +992,6 @@ class TableService:
             return True, f"Sto zatvoren. Ukupno: {total:.2f} RSD"
         return False, "Greška pri zatvaranju stola"
 
-    def get_table_session(self, table_id: int) -> Optional[dict]:
-        """Get current open session for a table"""
-        return self.sessions.get_open_session(table_id)
-
     # ============================================================
     # Order Management
     # ============================================================
@@ -1261,14 +1106,6 @@ class TableService:
         """Get new (not yet printed) orders filtered by item type"""
         return self.orders.get_new_orders_by_type(session_id, item_type)
 
-    def get_kitchen_orders(self, session_id: int) -> List[dict]:
-        """Get new food orders for kitchen"""
-        return self.get_new_orders_by_type(session_id, 'food')
-
-    def get_bar_orders(self, session_id: int) -> List[dict]:
-        """Get new drink orders for bar"""
-        return self.get_new_orders_by_type(session_id, 'drink')
-
     def save_last_ticket(self, session_id: int, ticket_text: str) -> bool:
         """Save last printed ticket for re-printing"""
         return self.sessions.save_last_ticket(session_id, ticket_text)
@@ -1276,87 +1113,3 @@ class TableService:
     def get_last_ticket(self, session_id: int) -> Optional[str]:
         """Get last printed ticket for a session"""
         return self.sessions.get_last_ticket(session_id)
-
-    # ============================================================
-    # Receipt Generation
-    # ============================================================
-
-    def generate_table_receipt(self, session_id: int, customer_info: dict = None) -> str:
-        """Generate receipt for a table session"""
-        session = self.sessions.get_by_id(session_id)
-        if not session:
-            return "Sesija nije pronađena"
-
-        table = self.tables.get_by_id(session['table_id'])
-        orders = self.orders.get_session_orders(session_id)
-
-        # Convert orders to receipt format
-        items = []
-        for order in orders:
-            items.append({
-                'item': order['item_name'],
-                'quantity': order['quantity'],
-                'price': order['unit_price'],
-                'vat_rate': 0.20  # TODO: Get from inventory
-            })
-
-        sale_data = {
-            'items': items,
-            'payment_info': {
-                'payment_type': session.get('payment_type', 'cash'),
-                'cash_amount': session.get('total_amount', 0),
-                'card_amount': 0,
-                'amount_tendered': session.get('total_amount', 0),
-                'change_given': 0
-            },
-            'sale_id': session_id,
-            'timestamp': session.get('opened_at', datetime.now().isoformat()),
-            'customer_info': customer_info
-        }
-
-        printer = FiscalReceipt(STORE_CONFIG)
-        receipt_text = printer.generate_receipt(sale_data)
-
-        # Add table info header
-        table_header = f"\n{'=' * 40}\n"
-        table_header += f"{table['name']}".center(40) + "\n"
-        table_header += f"{'=' * 40}\n"
-
-        return table_header + receipt_text
-
-    def generate_order_ticket(self, session_id: int, item_type: str = None, waiter_name: str = None) -> str:
-        """
-        Generate order ticket for kitchen or bar
-
-        Args:
-            session_id: The session to generate ticket for
-            item_type: Filter by type - 'food' (kitchen), 'drink' (bar), or None (all)
-            waiter_name: Optional waiter name for the ticket
-
-        Returns:
-            Formatted ticket text
-        """
-        from receipt_printer import OrderTicketPrinter
-
-        session = self.sessions.get_by_id(session_id)
-        if not session:
-            return "Sesija nije pronađena"
-
-        table = self.tables.get_by_id(session['table_id'])
-        orders = self.orders.get_session_orders(session_id)
-
-        # Filter orders with status 'ordered' (not yet printed)
-        pending_orders = [o for o in orders if o['status'] == 'ordered']
-
-        if not pending_orders:
-            return "Nema novih porudžbina"
-
-        # Use OrderTicketPrinter for formatting
-        ticket_printer = OrderTicketPrinter()
-
-        if item_type == 'food':
-            return ticket_printer.generate_kitchen_ticket(table['name'], pending_orders, waiter_name)
-        elif item_type == 'drink':
-            return ticket_printer.generate_bar_ticket(table['name'], pending_orders, waiter_name)
-        else:
-            return ticket_printer.generate_combined_ticket(table['name'], pending_orders, waiter_name)

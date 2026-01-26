@@ -349,450 +349,6 @@ class Database:
                     default_tables
                 )
 
-    def run_migrations(self) -> Dict[str, Any]:
-        """
-        Run Phase 3 data migrations to consolidate old tables into unified sales.
-
-        This migrates:
-        - Old sold_items + payments + receipts -> sales + sold_items (with sale_id)
-        - customer_invoices + customer_invoice_items -> sales + sold_items
-
-        Returns:
-            Dict with migration statistics
-        """
-        stats = {
-            'receipts_migrated': 0,
-            'customer_invoices_migrated': 0,
-            'sold_items_linked': 0,
-            'errors': []
-        }
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Check if migration already done
-            cursor.execute(
-                "SELECT 1 FROM _migrations WHERE migration_name = 'phase3_consolidate_sales'"
-            )
-            if cursor.fetchone():
-                stats['errors'].append('Migration already applied')
-                return stats
-
-            # ============================================================
-            # PART 1: Migrate receipts -> sales, link sold_items
-            # ============================================================
-            # The old structure: receipts.sale_id points to a sold_item.id
-            # We need to group sold_items by receipt and create proper sales
-
-            cursor.execute("""
-                SELECT r.id, r.sale_id, r.receipt_number, r.receipt_text, r.created_at
-                FROM receipts r
-                ORDER BY r.id
-            """)
-            receipts = cursor.fetchall()
-
-            for receipt in receipts:
-                receipt_id = receipt['id']
-                old_sale_id = receipt['sale_id']  # This is actually a sold_item.id
-                receipt_number = receipt['receipt_number']
-                receipt_text = receipt['receipt_text']
-                created_at = receipt['created_at']
-
-                # Get the sold_item that this receipt points to
-                cursor.execute(
-                    "SELECT * FROM sold_items WHERE id = ?",
-                    (old_sale_id,)
-                )
-                first_item = cursor.fetchone()
-                if not first_item:
-                    stats['errors'].append(f'Receipt {receipt_id}: sold_item {old_sale_id} not found')
-                    continue
-
-                # Get payment info for this sale
-                cursor.execute(
-                    "SELECT payment_type, amount FROM payments WHERE sale_id = ?",
-                    (old_sale_id,)
-                )
-                payments = cursor.fetchall()
-
-                # Determine payment type and amounts
-                cash_amount = 0.0
-                card_amount = 0.0
-                payment_type = 'cash'
-
-                for payment in payments:
-                    if payment['payment_type'] == 'cash':
-                        cash_amount += payment['amount']
-                    elif payment['payment_type'] == 'card':
-                        card_amount += payment['amount']
-
-                if cash_amount > 0 and card_amount > 0:
-                    payment_type = 'split'
-                elif card_amount > 0:
-                    payment_type = 'card'
-                else:
-                    payment_type = 'cash'
-
-                # Get total and VAT from the sold_item
-                # For old items, we need to calculate VAT (assume 20%)
-                total_amount = first_item['total']
-                vat_rate = first_item['vat_rate'] if first_item['vat_rate'] else 0.20
-                vat_amount = total_amount * vat_rate / (1 + vat_rate)
-
-                amount_tendered = first_item['amount_paid'] or total_amount
-                change_given = first_item['change_given'] or 0
-
-                # Create the sale record
-                cursor.execute(
-                    """INSERT INTO sales
-                       (receipt_number, payment_type, cash_amount, card_amount,
-                        amount_tendered, change_given, total_amount, vat_amount,
-                        receipt_text, status, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?)""",
-                    (receipt_number, payment_type, cash_amount, card_amount,
-                     amount_tendered, change_given, total_amount, vat_amount,
-                     receipt_text, created_at)
-                )
-                new_sale_id = cursor.lastrowid
-
-                # Link the sold_item to this sale
-                cursor.execute(
-                    "UPDATE sold_items SET sale_id = ? WHERE id = ?",
-                    (new_sale_id, old_sale_id)
-                )
-                stats['sold_items_linked'] += 1
-                stats['receipts_migrated'] += 1
-
-            # ============================================================
-            # PART 2: Migrate customer_invoices -> sales
-            # ============================================================
-            cursor.execute("""
-                SELECT ci.*, c.name as customer_name
-                FROM customer_invoices ci
-                LEFT JOIN customers c ON ci.customer_id = c.id
-                ORDER BY ci.id
-            """)
-            customer_invoices = cursor.fetchall()
-
-            for invoice in customer_invoices:
-                invoice_id = invoice['id']
-
-                # Create sale record for this customer invoice
-                cursor.execute(
-                    """INSERT INTO sales
-                       (receipt_number, customer_id, invoice_number, payment_type,
-                        total_amount, vat_amount, status, notes, created_at)
-                       VALUES (?, ?, ?, 'invoice', ?, ?, ?, ?, ?)""",
-                    (0,  # No receipt number for invoices
-                     invoice['customer_id'],
-                     invoice['invoice_number'],
-                     invoice['total_amount'],
-                     invoice['vat_amount'],
-                     invoice['status'],
-                     invoice['notes'],
-                     invoice['created_at'])
-                )
-                new_sale_id = cursor.lastrowid
-
-                # Migrate invoice items to sold_items
-                cursor.execute(
-                    "SELECT * FROM customer_invoice_items WHERE invoice_id = ?",
-                    (invoice_id,)
-                )
-                items = cursor.fetchall()
-
-                for item in items:
-                    cursor.execute(
-                        """INSERT INTO sold_items
-                           (sale_id, item, item_price, quantity, vat_rate, total)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (new_sale_id, item['item_name'], item['unit_price'],
-                         item['quantity'], item['vat_rate'], item['total'])
-                    )
-                    stats['sold_items_linked'] += 1
-
-                stats['customer_invoices_migrated'] += 1
-
-            # ============================================================
-            # PART 3: Handle orphan sold_items (no receipt)
-            # ============================================================
-            # Find sold_items that still have no sale_id
-            cursor.execute(
-                "SELECT * FROM sold_items WHERE sale_id IS NULL ORDER BY id"
-            )
-            orphans = cursor.fetchall()
-
-            # Group orphans by timestamp (items within 1 minute are same sale)
-            if orphans:
-                current_group = []
-                last_time = None
-
-                for orphan in orphans:
-                    item_time = orphan['time']
-
-                    if last_time is None or self._times_within_minutes(last_time, item_time, 1):
-                        current_group.append(orphan)
-                    else:
-                        # Process current group
-                        if current_group:
-                            self._create_sale_from_orphans(cursor, current_group, stats)
-                        current_group = [orphan]
-
-                    last_time = item_time
-
-                # Process last group
-                if current_group:
-                    self._create_sale_from_orphans(cursor, current_group, stats)
-
-            # Mark migration as complete
-            cursor.execute(
-                "INSERT INTO _migrations (migration_name) VALUES ('phase3_consolidate_sales')"
-            )
-
-        return stats
-
-    def _times_within_minutes(self, time1: str, time2: str, minutes: int) -> bool:
-        """Check if two timestamp strings are within N minutes of each other"""
-        if not time1 or not time2:
-            return False
-        try:
-            from datetime import datetime, timedelta
-            t1 = datetime.strptime(time1, "%Y-%m-%d %H:%M:%S")
-            t2 = datetime.strptime(time2, "%Y-%m-%d %H:%M:%S")
-            return abs((t2 - t1).total_seconds()) <= minutes * 60
-        except:
-            return False
-
-    def _create_sale_from_orphans(self, cursor, items: list, stats: dict):
-        """Create a sale record from a group of orphan sold_items"""
-        if not items:
-            return
-
-        # Calculate totals
-        total_amount = sum(item['total'] for item in items)
-        first_item = items[0]
-        vat_rate = first_item['vat_rate'] if first_item['vat_rate'] else 0.20
-        vat_amount = total_amount * vat_rate / (1 + vat_rate)
-
-        # Get next receipt number
-        cursor.execute("SELECT MAX(receipt_number) FROM sales")
-        max_receipt = cursor.fetchone()[0] or 0
-        receipt_number = max_receipt + 1
-
-        amount_tendered = first_item['amount_paid'] or total_amount
-        change_given = first_item['change_given'] or 0
-        created_at = first_item['time']
-
-        # Create sale record
-        cursor.execute(
-            """INSERT INTO sales
-               (receipt_number, payment_type, amount_tendered, change_given,
-                total_amount, vat_amount, status, created_at)
-               VALUES (?, 'cash', ?, ?, ?, ?, 'completed', ?)""",
-            (receipt_number, amount_tendered, change_given,
-             total_amount, vat_amount, created_at)
-        )
-        new_sale_id = cursor.lastrowid
-
-        # Link all items to this sale
-        for item in items:
-            cursor.execute(
-                "UPDATE sold_items SET sale_id = ? WHERE id = ?",
-                (new_sale_id, item['id'])
-            )
-            stats['sold_items_linked'] += 1
-
-    def get_migration_status(self) -> Dict[str, Any]:
-        """Check which migrations have been applied"""
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Check if migrations table exists
-            cursor.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='_migrations'"
-            )
-            if not cursor.fetchone():
-                return {'migrations': [], 'phase3_applied': False}
-
-            cursor.execute("SELECT migration_name, applied_at FROM _migrations ORDER BY id")
-            migrations = [dict(row) for row in cursor.fetchall()]
-
-            phase3_applied = any(m['migration_name'] == 'phase3_consolidate_sales' for m in migrations)
-
-            return {
-                'migrations': migrations,
-                'phase3_applied': phase3_applied
-            }
-
-    def cleanup_old_tables(self, confirm: bool = False) -> Dict[str, Any]:
-        """
-        Drop old tables after Phase 3 migration is verified.
-
-        WARNING: This permanently deletes data! Only run after verifying migration success.
-
-        Args:
-            confirm: Must be True to actually drop tables (safety flag)
-
-        Returns:
-            Dict with cleanup results
-        """
-        results = {
-            'tables_dropped': [],
-            'errors': []
-        }
-
-        if not confirm:
-            results['errors'].append('Must pass confirm=True to drop tables')
-            return results
-
-        # Check if migration was applied
-        status = self.get_migration_status()
-        if not status['phase3_applied']:
-            results['errors'].append('Phase 3 migration not applied - cannot cleanup')
-            return results
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Tables to drop (old redundant tables)
-            tables_to_drop = ['payments', 'receipts', 'customer_invoices', 'customer_invoice_items']
-
-            for table in tables_to_drop:
-                try:
-                    cursor.execute(f"DROP TABLE IF EXISTS {table}")
-                    results['tables_dropped'].append(table)
-                except Exception as e:
-                    results['errors'].append(f"Error dropping {table}: {str(e)}")
-
-            # Record cleanup in migrations
-            cursor.execute(
-                "INSERT OR IGNORE INTO _migrations (migration_name) VALUES ('phase3_cleanup_old_tables')"
-            )
-
-        return results
-
-    def verify_migration(self) -> Dict[str, Any]:
-        """
-        Verify Phase 3 migration was successful.
-
-        Checks:
-        - All sold_items have sale_id (or are orphans handled)
-        - Sales table has expected records
-        - Data integrity checks
-
-        Returns:
-            Dict with verification results
-        """
-        results = {
-            'success': True,
-            'checks': {},
-            'warnings': []
-        }
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Check 1: Count sales
-            cursor.execute("SELECT COUNT(*) FROM sales")
-            sales_count = cursor.fetchone()[0]
-            results['checks']['sales_count'] = sales_count
-
-            # Check 2: Count sold_items with sale_id
-            cursor.execute("SELECT COUNT(*) FROM sold_items WHERE sale_id IS NOT NULL")
-            linked_items = cursor.fetchone()[0]
-            results['checks']['sold_items_linked'] = linked_items
-
-            # Check 3: Count sold_items without sale_id (orphans)
-            cursor.execute("SELECT COUNT(*) FROM sold_items WHERE sale_id IS NULL")
-            orphan_items = cursor.fetchone()[0]
-            results['checks']['sold_items_orphans'] = orphan_items
-            if orphan_items > 0:
-                results['warnings'].append(f'{orphan_items} sold_items still have no sale_id')
-                results['success'] = False
-
-            # Check 4: Verify receipt numbers are preserved
-            cursor.execute("SELECT COUNT(DISTINCT receipt_number) FROM sales WHERE receipt_number > 0")
-            unique_receipts = cursor.fetchone()[0]
-            results['checks']['unique_receipt_numbers'] = unique_receipts
-
-            # Check 5: Count migrated customer invoices
-            cursor.execute("SELECT COUNT(*) FROM sales WHERE invoice_number IS NOT NULL")
-            invoice_sales = cursor.fetchone()[0]
-            results['checks']['customer_invoice_sales'] = invoice_sales
-
-        return results
-
-    def migrate_refunds_to_sales(self) -> Dict[str, Any]:
-        """
-        Phase 4: Update refunds table to reference sales instead of sold_items.
-
-        Maps refunds.original_sale_id (old sold_items.id) to the new sales.id
-        using the sold_items.sale_id relationship.
-
-        Returns:
-            Dict with migration statistics
-        """
-        stats = {
-            'refunds_updated': 0,
-            'refunds_skipped': 0,
-            'errors': []
-        }
-
-        with self.get_connection() as conn:
-            cursor = conn.cursor()
-
-            # Check if migration already done
-            cursor.execute(
-                "SELECT 1 FROM _migrations WHERE migration_name = 'phase4_refunds_to_sales'"
-            )
-            if cursor.fetchone():
-                stats['errors'].append('Migration already applied')
-                return stats
-
-            # Check Phase 3 was done first
-            cursor.execute(
-                "SELECT 1 FROM _migrations WHERE migration_name = 'phase3_consolidate_sales'"
-            )
-            if not cursor.fetchone():
-                stats['errors'].append('Phase 3 migration must be applied first')
-                return stats
-
-            # Get all refunds
-            cursor.execute("SELECT id, original_sale_id FROM refunds")
-            refunds = cursor.fetchall()
-
-            for refund in refunds:
-                refund_id = refund['id']
-                old_sale_id = refund['original_sale_id']  # This is sold_items.id
-
-                # Look up the new sale_id from sold_items
-                cursor.execute(
-                    "SELECT sale_id FROM sold_items WHERE id = ?",
-                    (old_sale_id,)
-                )
-                row = cursor.fetchone()
-
-                if row and row['sale_id']:
-                    new_sale_id = row['sale_id']
-                    cursor.execute(
-                        "UPDATE refunds SET original_sale_id = ? WHERE id = ?",
-                        (new_sale_id, refund_id)
-                    )
-                    stats['refunds_updated'] += 1
-                else:
-                    stats['refunds_skipped'] += 1
-                    stats['errors'].append(
-                        f"Refund {refund_id}: sold_item {old_sale_id} has no sale_id"
-                    )
-
-            # Mark migration as complete
-            cursor.execute(
-                "INSERT INTO _migrations (migration_name) VALUES ('phase4_refunds_to_sales')"
-            )
-
-        return stats
-
-
 class InventoryRepository:
     """Repository pattern for inventory operations"""
     
@@ -930,39 +486,6 @@ class SalesRepository:
             )
             return cursor.lastrowid
 
-    def record_sale_item(
-        self,
-        sale_id: int,
-        item_name: str,
-        unit_price: float,
-        quantity: float,
-        vat_rate: float = 0.20,
-        item_id: Optional[int] = None
-    ) -> int:
-        """Record a sold item linked to a sale (new method for Phase 2)"""
-        line_total = unit_price * quantity
-
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """INSERT INTO sold_items (sale_id, item_id, item, item_price, quantity, vat_rate, total)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (sale_id, item_id, item_name, unit_price, quantity, vat_rate, line_total)
-            )
-            return cursor.lastrowid
-
-    def get_items_by_sale_id(self, sale_id: int) -> List[Dict[str, Any]]:
-        """Get all items for a specific sale"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT * FROM sold_items
-                   WHERE sale_id = ?
-                   ORDER BY id""",
-                (sale_id,)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-    
     def get_recent_sales(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent sales"""
         with self.db.get_connection() as conn:
@@ -1003,64 +526,11 @@ class SalesRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_sales_between_dates(self, start_date: str, end_date: str) -> List[Dict[str, Any]]:
-        """
-        Get sales between two dates (inclusive)
-
-        Args:
-            start_date: Start date 'YYYY-MM-DD'
-            end_date: End date 'YYYY-MM-DD'
-        """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT * FROM sold_items 
-                   WHERE DATE(time) BETWEEN ? AND ?
-                   ORDER BY time""",
-                (start_date, end_date)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-
 class UnifiedSalesRepository:
     """Repository for the new unified sales table (Phase 1 of DB refactoring)"""
 
     def __init__(self, db: Database):
         self.db = db
-
-    def create_sale(
-        self,
-        receipt_number: int,
-        payment_type: str,
-        total_amount: float,
-        vat_amount: float,
-        cash_amount: float = 0,
-        card_amount: float = 0,
-        amount_tendered: float = 0,
-        change_given: float = 0,
-        customer_id: Optional[int] = None,
-        invoice_number: Optional[str] = None,
-        receipt_text: Optional[str] = None,
-        cashier_id: Optional[int] = None,
-        notes: Optional[str] = None
-    ) -> int:
-        """Create a new sale record"""
-        # Use local time instead of UTC (SQLite CURRENT_TIMESTAMP uses UTC)
-        local_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """INSERT INTO sales
-                   (receipt_number, customer_id, invoice_number, payment_type,
-                    cash_amount, card_amount, amount_tendered, change_given,
-                    total_amount, vat_amount, receipt_text, cashier_id, notes, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (receipt_number, customer_id, invoice_number, payment_type,
-                 cash_amount, card_amount, amount_tendered, change_given,
-                 total_amount, vat_amount, receipt_text, cashier_id, notes, local_time)
-            )
-            return cursor.lastrowid
 
     def get_by_id(self, sale_id: int) -> Optional[Dict[str, Any]]:
         """Get sale by ID"""
@@ -1079,18 +549,6 @@ class UnifiedSalesRepository:
                    WHERE DATE(created_at) = ?
                    ORDER BY created_at""",
                 (date,)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_sales_by_customer(self, customer_id: int) -> List[Dict[str, Any]]:
-        """Get all sales for a specific customer"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT * FROM sales
-                   WHERE customer_id = ?
-                   ORDER BY created_at DESC""",
-                (customer_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
 
@@ -1440,44 +898,6 @@ class UnifiedSalesRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
 
-    def get_sale_by_receipt_number(self, receipt_number: int) -> Optional[Dict[str, Any]]:
-        """
-        Get sale by receipt number (replaces ReceiptRepository.get_receipt_by_number)
-
-        Args:
-            receipt_number: The receipt number to look up
-
-        Returns:
-            Sale record or None
-        """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM sales WHERE receipt_number = ?",
-                (receipt_number,)
-            )
-            row = cursor.fetchone()
-            return dict(row) if row else None
-
-    def update_receipt_text(self, sale_id: int, receipt_text: str) -> bool:
-        """
-        Update receipt text for an existing sale
-
-        Args:
-            sale_id: ID of the sale
-            receipt_text: The receipt text to store
-
-        Returns:
-            True if updated, False if sale not found
-        """
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE sales SET receipt_text = ? WHERE id = ?",
-                (receipt_text, sale_id)
-            )
-            return cursor.rowcount > 0
-
     def get_refunds_for_sale(self, sale_id: int) -> List[Dict[str, Any]]:
         """Get all refunds for a specific sale"""
         with self.db.get_connection() as conn:
@@ -1693,18 +1113,6 @@ class RefundRepository:
             )
             return [dict(row) for row in cursor.fetchall()]
     
-    def get_refunds_by_sale(self, sale_id: int) -> List[Dict[str, Any]]:
-        """Get all refunds for a specific sale"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT * FROM refunds WHERE original_sale_id = ?",
-                (sale_id,)
-            )
-            return [dict(row) for row in cursor.fetchall()]
-
-
-
 class CustomerRepository:
     """Repository for customer management"""
     
@@ -1815,17 +1223,6 @@ class TableRepository:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM restaurant_tables
-                ORDER BY position_row, position_col
-            """)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_active(self) -> List[Dict[str, Any]]:
-        """Get only active tables"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM restaurant_tables
-                WHERE is_active = 1
                 ORDER BY position_row, position_col
             """)
             return [dict(row) for row in cursor.fetchall()]
@@ -1956,31 +1353,6 @@ class TableSessionRepository:
                 (total, session_id)
             )
             return cursor.rowcount > 0
-
-    def get_session_history(self, table_id: int = None, limit: int = 50) -> List[Dict[str, Any]]:
-        """Get session history, optionally filtered by table"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            if table_id:
-                cursor.execute("""
-                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
-                    FROM table_sessions s
-                    JOIN restaurant_tables t ON s.table_id = t.id
-                    LEFT JOIN users u ON s.waiter_id = u.id
-                    WHERE s.table_id = ?
-                    ORDER BY s.opened_at DESC
-                    LIMIT ?
-                """, (table_id, limit))
-            else:
-                cursor.execute("""
-                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
-                    FROM table_sessions s
-                    JOIN restaurant_tables t ON s.table_id = t.id
-                    LEFT JOIN users u ON s.waiter_id = u.id
-                    ORDER BY s.opened_at DESC
-                    LIMIT ?
-                """, (limit,))
-            return [dict(row) for row in cursor.fetchall()]
 
     def get_open_sessions(self) -> List[Dict[str, Any]]:
         """Get all currently open sessions"""
@@ -2130,17 +1502,6 @@ class TableOrderRepository:
             )
             return cursor.rowcount > 0
 
-    def get_orders_by_status(self, session_id: int, status: str) -> List[Dict[str, Any]]:
-        """Get orders filtered by status"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM table_orders
-                WHERE session_id = ? AND status = ?
-                ORDER BY created_at
-            """, (session_id, status))
-            return [dict(row) for row in cursor.fetchall()]
-
     def get_pending_orders(self) -> List[Dict[str, Any]]:
         """Get all pending orders across all open sessions (for kitchen display)"""
         with self.db.get_connection() as conn:
@@ -2153,17 +1514,6 @@ class TableOrderRepository:
                 WHERE s.status = 'open' AND o.status = 'ordered'
                 ORDER BY o.created_at
             """)
-            return [dict(row) for row in cursor.fetchall()]
-
-    def get_orders_by_item_type(self, session_id: int, item_type: str) -> List[Dict[str, Any]]:
-        """Get orders filtered by item type (food/drink/other)"""
-        with self.db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM table_orders
-                WHERE session_id = ? AND item_type = ?
-                ORDER BY created_at
-            """, (session_id, item_type))
             return [dict(row) for row in cursor.fetchall()]
 
     def get_new_orders_by_type(self, session_id: int, item_type: str) -> List[Dict[str, Any]]:
