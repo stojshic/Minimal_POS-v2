@@ -107,6 +107,17 @@
 - **Cons**: Adds complexity, may have subtle behavior differences
 - [ ] Evaluate if unification is worth the complexity (decision: later)
 
+### ENHANCEMENT-001: Grid layout with gaps for floor plan ✅ DONE
+- **Feature**: Allow empty spaces in table grid to mimic restaurant floor plan
+- **Example**: `[Table] [  ] [Table] [Table]` - gaps show as empty spaces
+- **Implementation**:
+  - Build position map: (row, col) -> table
+  - Render all columns from 0 to max_col
+  - Empty positions get invisible placeholder (same size as button)
+  - Only rows with at least one table are rendered
+- [x] Updated `load_tables()` to render proper grid with placeholders
+- [x] Added `.table-placeholder` CSS class matching button dimensions
+
 ## Phase 8: Additional Features (Future)
 - [ ] Split bill (divide table total among guests)
 - [ ] Transfer items between tables

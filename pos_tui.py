@@ -176,6 +176,12 @@ class RestaurantScreen(Screen):
     .table-occupied {
         background: $warning;
     }
+
+    .table-placeholder {
+        width: 24;
+        height: 7;
+        margin: 1;
+    }
     """
 
     BINDINGS = [
@@ -221,29 +227,41 @@ class RestaurantScreen(Screen):
         grid = self.query_one("#tables-grid", Vertical)
         grid.remove_children()
 
-        # Group tables by row
-        rows = {}
-        for table in self.tables:
-            row = table["row"]
-            if row not in rows:
-                rows[row] = []
-            rows[row].append(table)
+        if not self.tables:
+            return
 
-        # Create rows
-        for row_num in sorted(rows.keys()):
+        # Build a position map: (row, col) -> table
+        table_map = {}
+        for table in self.tables:
+            table_map[(table['row'], table['col'])] = table
+
+        # Find grid dimensions - only consider rows that have tables
+        rows_with_tables = sorted(set(t['row'] for t in self.tables))
+        max_col = max(t['col'] for t in self.tables)
+
+        # Create rows (only rows that have at least one table)
+        for row_num in rows_with_tables:
             row_container = Horizontal(classes="table-row")
             grid.mount(row_container)
 
-            # Sort by column within row
-            for table in sorted(rows[row_num], key=lambda t: t["col"]):
-                btn_class = "table-btn table-occupied" if table.get("occupied") else "table-btn table-free"
-                total_text = f"\n{table.get('total', 0):.0f} RSD" if table.get("total", 0) > 0 else "\nSlobodan"
-                btn = Button(
-                    f"{table['name']}{total_text}",
-                    id=f"table-{table['id']}",
-                    classes=btn_class
-                )
-                row_container.mount(btn)
+            # Render all columns (0 to max_col), with placeholders for empty spots
+            for col_num in range(max_col + 1):
+                table = table_map.get((row_num, col_num))
+
+                if table:
+                    # Render table button
+                    btn_class = "table-btn table-occupied" if table.get("occupied") else "table-btn table-free"
+                    total_text = f"\n{table.get('total', 0):.0f} RSD" if table.get("total", 0) > 0 else "\nSlobodan"
+                    btn = Button(
+                        f"{table['name']}{total_text}",
+                        id=f"table-{table['id']}",
+                        classes=btn_class
+                    )
+                    row_container.mount(btn)
+                else:
+                    # Render empty placeholder (same size as table button)
+                    placeholder = Static("", classes="table-placeholder")
+                    row_container.mount(placeholder)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle table button clicks"""
