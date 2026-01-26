@@ -70,10 +70,17 @@ class Database:
                     price REAL NOT NULL,
                     quantity REAL NOT NULL,
                     vat_rate REAL DEFAULT 0.20,
+                    item_type TEXT DEFAULT 'other',
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # Migration: Add item_type column if it doesn't exist
+            cursor.execute("PRAGMA table_info(inventory)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'item_type' not in columns:
+                cursor.execute("ALTER TABLE inventory ADD COLUMN item_type TEXT DEFAULT 'other'")
             
             # Sold items table (linked to sales table after Phase 2)
             cursor.execute("""
@@ -304,6 +311,7 @@ class Database:
                     quantity REAL NOT NULL,
                     unit_price REAL NOT NULL,
                     total_price REAL NOT NULL,
+                    item_type TEXT DEFAULT 'other',
                     status TEXT DEFAULT 'ordered',
                     notes TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -311,6 +319,12 @@ class Database:
                     FOREIGN KEY (item_id) REFERENCES inventory(id)
                 )
             """)
+
+            # Migration: Add item_type column to table_orders if it doesn't exist
+            cursor.execute("PRAGMA table_info(table_orders)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'item_type' not in columns:
+                cursor.execute("ALTER TABLE table_orders ADD COLUMN item_type TEXT DEFAULT 'other'")
 
             # Initialize default restaurant tables if none exist
             cursor.execute("SELECT COUNT(*) FROM restaurant_tables")
@@ -815,14 +829,14 @@ class InventoryRepository:
         return self.search("")
     
     def add(self, item: str, price: float, quantity: float, barcode: Optional[str] = None,
-            vat_rate: float = 0.20) -> int:
+            vat_rate: float = 0.20, item_type: str = 'other') -> int:
         """Add new inventory item"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO inventory (item, barcode, price, quantity, vat_rate)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (item, barcode, price, quantity, vat_rate)
+                """INSERT INTO inventory (item, barcode, price, quantity, vat_rate, item_type)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (item, barcode, price, quantity, vat_rate, item_type)
             )
             return cursor.lastrowid
     
@@ -867,7 +881,8 @@ class InventoryRepository:
             return cursor.rowcount > 0
 
     def update_item(self, item_id: int, name: str, barcode: Optional[str],
-                    price: float, quantity: float, vat_rate: float) -> bool:
+                    price: float, quantity: float, vat_rate: float,
+                    item_type: str = 'other') -> bool:
         """Update all fields of an inventory item"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -878,9 +893,10 @@ class InventoryRepository:
                        price = ?,
                        quantity = ?,
                        vat_rate = ?,
+                       item_type = ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
-                (name, barcode, price, quantity, vat_rate, item_id)
+                (name, barcode, price, quantity, vat_rate, item_type, item_id)
             )
             return cursor.rowcount > 0
 
@@ -2006,6 +2022,7 @@ class TableOrderRepository:
         item_name: str,
         quantity: float,
         unit_price: float,
+        item_type: str = 'other',
         notes: str = ""
     ) -> int:
         """Add an order to a session"""
@@ -2014,9 +2031,9 @@ class TableOrderRepository:
             cursor = conn.cursor()
             cursor.execute(
                 """INSERT INTO table_orders
-                   (session_id, item_id, item_name, quantity, unit_price, total_price, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, item_id, item_name, quantity, unit_price, total_price, notes)
+                   (session_id, item_id, item_name, quantity, unit_price, total_price, item_type, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, item_id, item_name, quantity, unit_price, total_price, item_type, notes)
             )
             return cursor.lastrowid
 
@@ -2083,6 +2100,28 @@ class TableOrderRepository:
                 WHERE s.status = 'open' AND o.status = 'ordered'
                 ORDER BY o.created_at
             """)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_orders_by_item_type(self, session_id: int, item_type: str) -> List[Dict[str, Any]]:
+        """Get orders filtered by item type (food/drink/other)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_orders
+                WHERE session_id = ? AND item_type = ?
+                ORDER BY created_at
+            """, (session_id, item_type))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_new_orders_by_type(self, session_id: int, item_type: str) -> List[Dict[str, Any]]:
+        """Get only 'ordered' (not yet printed) orders filtered by item type"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_orders
+                WHERE session_id = ? AND item_type = ? AND status = 'ordered'
+                ORDER BY created_at
+            """, (session_id, item_type))
             return [dict(row) for row in cursor.fetchall()]
 
 

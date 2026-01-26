@@ -4,7 +4,7 @@ Store this info or load from settings file
 """
 
 STORE_CONFIG = {
-    "store_type": "shop",  # "shop" for retail POS, "restaurant" for table-based service
+    "store_type": "restaurant",  # "shop" for retail POS, "restaurant" for table-based service
     "name": "Moja Prodavnica",  # Your store name
     "address": "Dejana Brankova 26, Bela Crkva",  # Store address
     "pib": "123123123",  # Your PIB

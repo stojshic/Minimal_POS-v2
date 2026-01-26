@@ -52,12 +52,25 @@
   - [ ] Add notes for kitchen (future)
 
 ## Phase 5: Order Tickets (Kitchen/Bar Printing)
-- [ ] Add `item_type` to inventory (food/drink/other) for routing
-- [ ] Create `OrderTicketPrinter` class in `receipt_printer.py`
-  - [ ] Kitchen ticket format (food items only)
-  - [ ] Bar ticket format (drink items only)
-  - [ ] Include: table number, items, quantities, notes, timestamp
-- [ ] `OrderTicketScreen` to display ticket before "printing"
+- [x] Add `item_type` to inventory (food/drink/other) for routing
+  - [x] Added `item_type` column to `inventory` table (with migration)
+  - [x] Added `item_type` column to `table_orders` table (with migration)
+  - [x] Updated `InventoryRepository.add()` and `update_item()` methods
+  - [x] Updated `TableOrderRepository.add_order()` method
+  - [x] Updated `AddEditItemScreen` UI with type selection buttons
+- [x] Create `OrderTicketPrinter` class in `receipt_printer.py`
+  - [x] Kitchen ticket format (food items only)
+  - [x] Bar ticket format (drink items only)
+  - [x] Combined ticket format (generates both if needed)
+  - [x] Include: table number, items, quantities, notes, timestamp, waiter name
+- [x] `OrderTicketScreen` to display ticket before "printing"
+  - [x] Shows formatted ticket text
+  - [x] Print button to confirm (marks orders as 'preparing')
+  - [x] Close button to cancel
+- [x] Wired up ticket printing from `TableOrderScreen`
+  - [x] Uses `OrderTicketPrinter.generate_combined_ticket()`
+  - [x] Filters only new orders (status='ordered')
+  - [x] Pushes `OrderTicketScreen` for preview
 
 ## Phase 6: Table Management (Admin)
 - [x] Create `TableManagementScreen` (admin only)

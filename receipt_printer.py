@@ -180,3 +180,143 @@ class FiscalReceipt:
         In production, this would send to thermal printer
         """
         print("\n" + receipt_text + "\n")
+
+
+class OrderTicketPrinter:
+    """Generates order tickets for kitchen and bar"""
+
+    def __init__(self, width: int = 32):
+        """
+        Initialize ticket printer
+
+        Args:
+            width: Character width for ticket (default 32 for small thermal printers)
+        """
+        self.width = width
+
+    def generate_ticket(
+        self,
+        table_name: str,
+        orders: List[Dict],
+        ticket_type: str = "all",
+        waiter_name: str = None
+    ) -> str:
+        """
+        Generate an order ticket for kitchen or bar
+
+        Args:
+            table_name: Name of the table (e.g., "Sto 1")
+            orders: List of order dicts with item_name, quantity, notes, item_type
+            ticket_type: "kitchen" (food only), "bar" (drinks only), or "all"
+            waiter_name: Optional waiter name
+
+        Returns:
+            Formatted ticket text
+        """
+        # Filter orders by type if specified
+        if ticket_type == "kitchen":
+            filtered_orders = [o for o in orders if o.get('item_type') == 'food']
+            header = "KUHINJA"
+        elif ticket_type == "bar":
+            filtered_orders = [o for o in orders if o.get('item_type') == 'drink']
+            header = "ŠANK"
+        else:
+            filtered_orders = orders
+            header = "PORUDŽBINA"
+
+        if not filtered_orders:
+            return ""
+
+        ticket = []
+        ticket.append("=" * self.width)
+        ticket.append(header.center(self.width))
+        ticket.append("=" * self.width)
+        ticket.append("")
+        ticket.append(f"Sto: {table_name}".center(self.width))
+        ticket.append(f"{datetime.now().strftime('%d.%m.%Y %H:%M:%S')}".center(self.width))
+        if waiter_name:
+            ticket.append(f"Konobar: {waiter_name}".center(self.width))
+        ticket.append("")
+        ticket.append("-" * self.width)
+
+        # List items
+        for order in filtered_orders:
+            qty = order.get('quantity', 1)
+            qty_str = f"{int(qty)}x" if qty == int(qty) else f"{qty:.1f}x"
+            item_name = order.get('item_name', 'Unknown')
+
+            # Truncate long names
+            max_item_len = self.width - len(qty_str) - 1
+            if len(item_name) > max_item_len:
+                item_name = item_name[:max_item_len - 3] + "..."
+
+            ticket.append(f"{qty_str} {item_name}")
+
+            # Add notes if present
+            notes = order.get('notes', '')
+            if notes:
+                # Indent notes and wrap if needed
+                notes_prefix = "   >> "
+                max_notes_len = self.width - len(notes_prefix)
+                if len(notes) > max_notes_len:
+                    notes = notes[:max_notes_len - 3] + "..."
+                ticket.append(f"{notes_prefix}{notes}")
+
+        ticket.append("-" * self.width)
+        ticket.append(f"Ukupno stavki: {len(filtered_orders)}".center(self.width))
+        ticket.append("=" * self.width)
+
+        return "\n".join(ticket)
+
+    def generate_kitchen_ticket(
+        self,
+        table_name: str,
+        orders: List[Dict],
+        waiter_name: str = None
+    ) -> str:
+        """Generate ticket for kitchen (food items only)"""
+        return self.generate_ticket(table_name, orders, "kitchen", waiter_name)
+
+    def generate_bar_ticket(
+        self,
+        table_name: str,
+        orders: List[Dict],
+        waiter_name: str = None
+    ) -> str:
+        """Generate ticket for bar (drink items only)"""
+        return self.generate_ticket(table_name, orders, "bar", waiter_name)
+
+    def generate_combined_ticket(
+        self,
+        table_name: str,
+        orders: List[Dict],
+        waiter_name: str = None
+    ) -> str:
+        """
+        Generate separate tickets for kitchen and bar combined
+
+        Returns both tickets concatenated with a separator
+        """
+        kitchen_ticket = self.generate_kitchen_ticket(table_name, orders, waiter_name)
+        bar_ticket = self.generate_bar_ticket(table_name, orders, waiter_name)
+
+        # Handle "other" type items - include in a general ticket
+        other_orders = [o for o in orders if o.get('item_type') not in ('food', 'drink')]
+        other_ticket = ""
+        if other_orders:
+            other_ticket = self.generate_ticket(table_name, other_orders, "all", waiter_name)
+
+        tickets = []
+        if kitchen_ticket:
+            tickets.append(kitchen_ticket)
+        if bar_ticket:
+            tickets.append(bar_ticket)
+        if other_ticket and not kitchen_ticket and not bar_ticket:
+            # Only include "other" ticket if no kitchen or bar tickets
+            tickets.append(other_ticket)
+
+        if not tickets:
+            # Fallback: all items together
+            return self.generate_ticket(table_name, orders, "all", waiter_name)
+
+        return "\n\n".join(tickets)

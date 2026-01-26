@@ -1164,6 +1164,9 @@ class TableService:
         if not item:
             return False, "Artikal nije pronađen"
 
+        # Get item_type (default to 'other' for backward compatibility)
+        item_type = item.get('item_type', 'other')
+
         # Add order
         order_id = self.orders.add_order(
             session_id=session_id,
@@ -1171,6 +1174,7 @@ class TableService:
             item_name=item['item'],
             quantity=quantity,
             unit_price=item['price'],
+            item_type=item_type,
             notes=notes
         )
 
@@ -1245,6 +1249,18 @@ class TableService:
         """Get all currently open sessions"""
         return self.sessions.get_open_sessions()
 
+    def get_new_orders_by_type(self, session_id: int, item_type: str) -> List[dict]:
+        """Get new (not yet printed) orders filtered by item type"""
+        return self.orders.get_new_orders_by_type(session_id, item_type)
+
+    def get_kitchen_orders(self, session_id: int) -> List[dict]:
+        """Get new food orders for kitchen"""
+        return self.get_new_orders_by_type(session_id, 'food')
+
+    def get_bar_orders(self, session_id: int) -> List[dict]:
+        """Get new drink orders for bar"""
+        return self.get_new_orders_by_type(session_id, 'drink')
+
     # ============================================================
     # Receipt Generation
     # ============================================================
@@ -1292,8 +1308,20 @@ class TableService:
 
         return table_header + receipt_text
 
-    def generate_order_ticket(self, session_id: int, item_type: str = None) -> str:
-        """Generate order ticket for kitchen or bar"""
+    def generate_order_ticket(self, session_id: int, item_type: str = None, waiter_name: str = None) -> str:
+        """
+        Generate order ticket for kitchen or bar
+
+        Args:
+            session_id: The session to generate ticket for
+            item_type: Filter by type - 'food' (kitchen), 'drink' (bar), or None (all)
+            waiter_name: Optional waiter name for the ticket
+
+        Returns:
+            Formatted ticket text
+        """
+        from receipt_printer import OrderTicketPrinter
+
         session = self.sessions.get_by_id(session_id)
         if not session:
             return "Sesija nije pronađena"
@@ -1301,27 +1329,18 @@ class TableService:
         table = self.tables.get_by_id(session['table_id'])
         orders = self.orders.get_session_orders(session_id)
 
-        # Filter by item type if specified (future: food vs drinks)
-        # For now, include all orders with status 'ordered'
+        # Filter orders with status 'ordered' (not yet printed)
         pending_orders = [o for o in orders if o['status'] == 'ordered']
 
         if not pending_orders:
             return "Nema novih porudžbina"
 
-        ticket = []
-        ticket.append("=" * 32)
-        ticket.append(f"PORUDŽBINA - {table['name']}".center(32))
-        ticket.append(f"{datetime.now().strftime('%H:%M:%S')}".center(32))
-        ticket.append("=" * 32)
-        ticket.append("")
+        # Use OrderTicketPrinter for formatting
+        ticket_printer = OrderTicketPrinter()
 
-        for order in pending_orders:
-            qty_str = f"{int(order['quantity'])}x" if order['quantity'] == int(order['quantity']) else f"{order['quantity']}x"
-            ticket.append(f"{qty_str} {order['item_name']}")
-            if order.get('notes'):
-                ticket.append(f"   >> {order['notes']}")
-
-        ticket.append("")
-        ticket.append("=" * 32)
-
-        return "\n".join(ticket)
+        if item_type == 'food':
+            return ticket_printer.generate_kitchen_ticket(table['name'], pending_orders, waiter_name)
+        elif item_type == 'drink':
+            return ticket_printer.generate_bar_ticket(table['name'], pending_orders, waiter_name)
+        else:
+            return ticket_printer.generate_combined_ticket(table['name'], pending_orders, waiter_name)

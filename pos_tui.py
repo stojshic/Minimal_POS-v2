@@ -20,6 +20,7 @@ from pos_business_logic import (
         UserService, RefundService, TableService
 )
 from config import STORE_CONFIG, CONFIG
+from receipt_printer import OrderTicketPrinter
 
 
 USER = ""
@@ -882,21 +883,36 @@ class TableOrderScreen(Screen):
 
     def action_print_order(self) -> None:
         """Print order ticket for kitchen/bar"""
-        if not self.orders:
-            self.notify("Nema porudžbina za štampu!", severity="warning")
+        # Get new orders (status='ordered')
+        new_orders = [o for o in self.orders if o.get('status') == 'ordered']
+        if not new_orders:
+            self.notify("Nema novih porudžbina za štampu!", severity="warning")
             return
 
-        # Generate order ticket using service
-        ticket = self.table_service.generate_order_ticket(self.session_id)
+        # Get waiter name
+        waiter_name = self.app.current_user.get('full_name') if self.app.current_user else None
 
-        # Mark orders as 'preparing'
-        for order in self.orders:
-            if order.get('status') == 'ordered':
-                self.table_service.update_order_status(order['id'], 'preparing')
+        # Generate tickets using OrderTicketPrinter
+        ticket_printer = OrderTicketPrinter()
+        ticket_text = ticket_printer.generate_combined_ticket(
+            table_name=self.table['name'],
+            orders=new_orders,
+            waiter_name=waiter_name
+        )
 
-        self.load_orders()
-        self.notify("Porudžbina poslata u kuhinju!", severity="success")
-        # TODO: Show ticket in a viewer or send to printer
+        if not ticket_text:
+            self.notify("Nema stavki za štampu!", severity="warning")
+            return
+
+        # Show ticket screen
+        def handle_ticket_result(result):
+            if result and result.get('printed'):
+                # Mark orders as 'preparing'
+                for order in new_orders:
+                    self.table_service.update_order_status(order['id'], 'preparing')
+                self.load_orders()
+
+        self.app.push_screen(OrderTicketScreen(ticket_text), handle_ticket_result)
 
     def action_print_bill(self) -> None:
         """Print bill and close table"""
@@ -919,6 +935,113 @@ class TableOrderScreen(Screen):
         if not self.orders and self.session_id:
             self.table_service.close_table(self.session_id)
         self.dismiss({"closed": False})
+
+
+class OrderTicketScreen(Screen):
+    """Screen for displaying and printing order tickets for kitchen/bar"""
+
+    CSS = """
+    OrderTicketScreen {
+        align: center middle;
+    }
+
+    #ticket-dialog {
+        width: 50;
+        height: auto;
+        max-height: 90%;
+        border: thick $warning;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #ticket-header {
+        text-align: center;
+        padding: 1;
+        text-style: bold;
+        color: $warning;
+    }
+
+    #ticket-content {
+        height: auto;
+        max-height: 60%;
+        overflow-y: auto;
+        padding: 1;
+        background: $panel;
+        border: solid $primary;
+    }
+
+    #ticket-content Static {
+        width: 100%;
+    }
+
+    #ticket-buttons {
+        layout: horizontal;
+        height: auto;
+        padding: 1;
+        align: center middle;
+    }
+
+    #ticket-buttons Button {
+        margin: 0 1;
+    }
+
+    .ticket-type-label {
+        text-align: center;
+        padding: 0 0 1 0;
+        color: $text-muted;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("p", "print", "Štampaj"),
+    ]
+
+    def __init__(self, ticket_text: str, ticket_type: str = "all"):
+        """
+        Initialize ticket screen
+
+        Args:
+            ticket_text: The formatted ticket text to display
+            ticket_type: Type of ticket ("kitchen", "bar", "all")
+        """
+        super().__init__()
+        self.ticket_text = ticket_text
+        self.ticket_type = ticket_type
+
+    def compose(self) -> ComposeResult:
+        type_labels = {
+            "kitchen": "KUHINJA",
+            "bar": "ŠANK",
+            "all": "SVE PORUDŽBINE"
+        }
+        type_label = type_labels.get(self.ticket_type, "PORUDŽBINA")
+
+        with Vertical(id="ticket-dialog"):
+            yield Static(f"PORUDŽBINA ZA: {type_label}", id="ticket-header")
+            with Vertical(id="ticket-content"):
+                yield Static(self.ticket_text, markup=False)
+            with Horizontal(id="ticket-buttons"):
+                yield Button("Štampaj [P]", id="print-btn", variant="success")
+                yield Button("Zatvori [ESC]", id="close-btn", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "print-btn":
+            self.action_print()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def action_print(self) -> None:
+        """Print the ticket"""
+        # In production, this would send to actual printer
+        # For now, we just show a confirmation
+        self.notify("Porudžbina poslata na štampanje!", severity="success")
+        self.dismiss({"printed": True})
+
+    def action_close(self) -> None:
+        """Close without printing"""
+        self.dismiss({"printed": False})
 
 
 class CustomerManagementScreen(Screen):
@@ -1900,6 +2023,12 @@ class AddEditItemScreen(Screen):
         margin: 1 0;
     }
 
+    #type-selection {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+
     #buttons {
         layout: horizontal;
         height: auto;
@@ -1917,6 +2046,7 @@ class AddEditItemScreen(Screen):
         self.item = item  # None for new item, dict for editing
         self.is_edit_mode = item is not None
         self.selected_vat = item.get('vat_rate', 0.20) if item else 0.20
+        self.selected_item_type = item.get('item_type', 'other') if item else 'other'
 
     def compose(self) -> ComposeResult:
         title = "✏️  IZMENA ARTIKLA" if self.is_edit_mode else "➕ NOVI ARTIKAL"
@@ -1960,6 +2090,12 @@ class AddEditItemScreen(Screen):
                 yield Button("10%", id="vat-10", variant="default")
                 yield Button("20%", id="vat-20", variant="primary")
 
+            yield Label("Tip artikla (za restoran):", classes="input-label")
+            with Horizontal(id="type-selection"):
+                yield Button("Hrana", id="type-food", variant="default")
+                yield Button("Piće", id="type-drink", variant="default")
+                yield Button("Ostalo", id="type-other", variant="primary")
+
             with Horizontal(id="buttons"):
                 yield Button("Sačuvaj", id="save-btn", variant="success")
                 yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
@@ -1970,6 +2106,7 @@ class AddEditItemScreen(Screen):
 
         # Highlight correct VAT button
         self.update_vat_buttons()
+        self.update_type_buttons()
 
     def update_vat_buttons(self) -> None:
         """Update VAT button appearances"""
@@ -1982,6 +2119,17 @@ class AddEditItemScreen(Screen):
         for rate, button in vat_buttons.items():
             button.variant = "primary" if rate == self.selected_vat else "default"
 
+    def update_type_buttons(self) -> None:
+        """Update item type button appearances"""
+        type_buttons = {
+            'food': self.query_one("#type-food", Button),
+            'drink': self.query_one("#type-drink", Button),
+            'other': self.query_one("#type-other", Button),
+        }
+
+        for item_type, button in type_buttons.items():
+            button.variant = "primary" if item_type == self.selected_item_type else "default"
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button clicks"""
         if event.button.id == "vat-0":
@@ -1993,6 +2141,15 @@ class AddEditItemScreen(Screen):
         elif event.button.id == "vat-20":
             self.selected_vat = 0.20
             self.update_vat_buttons()
+        elif event.button.id == "type-food":
+            self.selected_item_type = 'food'
+            self.update_type_buttons()
+        elif event.button.id == "type-drink":
+            self.selected_item_type = 'drink'
+            self.update_type_buttons()
+        elif event.button.id == "type-other":
+            self.selected_item_type = 'other'
+            self.update_type_buttons()
         elif event.button.id == "save-btn":
             self.save_item()
         elif event.button.id == "cancel-btn":
@@ -2023,16 +2180,18 @@ class AddEditItemScreen(Screen):
 
         try:
             if self.is_edit_mode:
-                # Update existing item - all fields including name, barcode, VAT
+                # Update existing item - all fields including name, barcode, VAT, item_type
                 item_id = self.item['id']
                 self.pos_service.inventory.update_item(
-                    item_id, name, barcode, price, quantity, self.selected_vat
+                    item_id, name, barcode, price, quantity, self.selected_vat,
+                    self.selected_item_type
                 )
                 self.notify(f"✅ Artikal '{name}' ažuriran!", severity="success")
             else:
-                # Add new item with VAT rate
+                # Add new item with VAT rate and item_type
                 item_id = self.pos_service.inventory.add(
-                    name, price, quantity, barcode, self.selected_vat
+                    name, price, quantity, barcode, self.selected_vat,
+                    self.selected_item_type
                 )
                 self.notify(f"✅ Artikal '{name}' dodat!", severity="success")
 
@@ -5020,6 +5179,13 @@ class POSApp(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Live search as user types"""
         if event.input.id == "search-input":
+            # Only handle if we're in shop mode (inventory-table exists)
+            try:
+                self.query_one("#inventory-table", DataTable)
+            except Exception:
+                # Not in shop mode - let the event propagate to other screens
+                return
+
             search_term = event.value.strip()
 
             # Try as barcode first (only if looks like complete barcode)
@@ -5037,6 +5203,13 @@ class POSApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in search box"""
         if event.input.id == "search-input":
+            # Only handle if we're in shop mode (inventory-table exists)
+            try:
+                inv_table = self.query_one("#inventory-table", DataTable)
+            except Exception:
+                # Not in shop mode - let the event propagate to other screens
+                return
+
             search_term = event.value.strip()
 
             if search_term:
@@ -5049,7 +5222,6 @@ class POSApp(App):
                     return
 
                 # Not a barcode - add first item from filtered list
-                inv_table = self.query_one("#inventory-table", DataTable)
                 if inv_table.row_count > 0:
                     # Get first row
                     row = inv_table.get_row_at(0)
