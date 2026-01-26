@@ -1269,6 +1269,14 @@ class TableService:
         """Get new drink orders for bar"""
         return self.get_new_orders_by_type(session_id, 'drink')
 
+    def save_last_ticket(self, session_id: int, ticket_text: str) -> bool:
+        """Save last printed ticket for re-printing"""
+        return self.sessions.save_last_ticket(session_id, ticket_text)
+
+    def get_last_ticket(self, session_id: int) -> Optional[str]:
+        """Get last printed ticket for a session"""
+        return self.sessions.get_last_ticket(session_id)
+
     # ============================================================
     # Receipt Generation
     # ============================================================

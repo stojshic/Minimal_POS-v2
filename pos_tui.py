@@ -730,7 +730,7 @@ class TableOrderScreen(Screen):
         self.table_service = table_service
         self.session_id = None
         self.orders = []
-        self.last_printed_ticket = None  # Store last ticket for re-printing
+        # Note: last_printed_ticket is now stored in session (database) for persistence
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -947,7 +947,8 @@ class TableOrderScreen(Screen):
         new_orders = [o for o in self.orders if o.get('status') == 'ordered']
         if not new_orders:
             # No new orders - hint about re-print if there's a previous ticket
-            if self.last_printed_ticket:
+            last_ticket = self.table_service.get_last_ticket(self.session_id)
+            if last_ticket:
                 self.notify("Nema novih porudžbina. Pritisnite R za ponovnu štampu.", severity="warning")
             else:
                 self.notify("Nema porudžbina za štampu!", severity="warning")
@@ -968,8 +969,8 @@ class TableOrderScreen(Screen):
             self.notify("Nema stavki za štampu!", severity="warning")
             return
 
-        # Store ticket for re-printing
-        self.last_printed_ticket = ticket_text
+        # Store ticket in session for re-printing (persists across screen exits)
+        self.table_service.save_last_ticket(self.session_id, ticket_text)
 
         # Show ticket screen
         def handle_ticket_result(result):
@@ -984,12 +985,14 @@ class TableOrderScreen(Screen):
 
     def action_reprint_order(self) -> None:
         """Re-print the last order ticket"""
-        if not self.last_printed_ticket:
+        # Get ticket from session (persists across screen exits)
+        last_ticket = self.table_service.get_last_ticket(self.session_id)
+        if not last_ticket:
             self.notify("Nema prethodne porudžbine za štampu!", severity="warning")
             return
 
         # Show ticket screen for re-print (OrderTicketScreen handles the notification)
-        self.app.push_screen(OrderTicketScreen(self.last_printed_ticket))
+        self.app.push_screen(OrderTicketScreen(last_ticket))
 
     def action_print_bill(self) -> None:
         """Print bill and close table - opens payment screen"""

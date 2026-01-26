@@ -296,10 +296,17 @@ class Database:
                     total_amount REAL DEFAULT 0,
                     payment_type TEXT,
                     notes TEXT,
+                    last_ticket TEXT,
                     FOREIGN KEY (table_id) REFERENCES restaurant_tables(id),
                     FOREIGN KEY (waiter_id) REFERENCES users(id)
                 )
             """)
+
+            # Migration: Add last_ticket column to table_sessions if it doesn't exist
+            cursor.execute("PRAGMA table_info(table_sessions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'last_ticket' not in columns:
+                cursor.execute("ALTER TABLE table_sessions ADD COLUMN last_ticket TEXT")
 
             # Table orders (individual items ordered at a table)
             cursor.execute("""
@@ -1988,6 +1995,27 @@ class TableSessionRepository:
                 ORDER BY s.opened_at
             """)
             return [dict(row) for row in cursor.fetchall()]
+
+    def save_last_ticket(self, session_id: int, ticket_text: str) -> bool:
+        """Save last printed ticket for a session (for re-printing)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE table_sessions SET last_ticket = ? WHERE id = ?",
+                (ticket_text, session_id)
+            )
+            return cursor.rowcount > 0
+
+    def get_last_ticket(self, session_id: int) -> Optional[str]:
+        """Get last printed ticket for a session"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT last_ticket FROM table_sessions WHERE id = ?",
+                (session_id,)
+            )
+            row = cursor.fetchone()
+            return row['last_ticket'] if row else None
 
 
 class TableOrderRepository:
