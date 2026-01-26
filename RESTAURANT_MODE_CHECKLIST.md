@@ -154,12 +154,13 @@
 ### BUG-006: No re-print option for order tickets ✅ FIXED
 - **Issue**: If printer fails, no way to re-print the last order ticket
 - **Current**: After print, orders marked as 'preparing' - can't print again
-- **Solution**: Added Ctrl+P shortcut and notification hint
+- **Solution**: Added R shortcut for re-print
 - **Files**: `pos_tui.py` - `TableOrderScreen`
 - [x] Added `last_printed_ticket` property to store ticket text
 - [x] Added `action_reprint_order()` method
-- [x] Added Ctrl+P binding
-- [x] Updated notification: "Porudžbina poslata! (Ctrl+P za ponovnu štampu)"
+- [x] Added R binding (Ctrl+P was already used for command palette)
+- [x] When no new orders but has previous ticket: "Nema novih porudžbina. Pritisnite R za ponovnu štampu."
+- [x] Removed duplicate notifications (OrderTicketScreen handles it)
 
 ### BUG-007: Search input still causes error in restaurant mode ✅ FIXED
 - **Issue**: Searching in TableOrderScreen still triggers POSApp handler
@@ -182,6 +183,21 @@
 - **Files**: `pos_tui.py` - `TableOrderScreen.handle_payment_result()`
 - [x] Now uses `POSService.sell_items()` which saves to unified sales table
 - [x] Receipt text stored properly for history view
+
+### BUG-010: Navigation from admin screens shows empty inventory ✅ FIXED
+- **Issue**: Pressing Esc from "Prethodni računi" shows empty inventory/cart instead of table view
+- **Root cause**: `open_main_screen()` pops ALL screens including RestaurantScreen
+- **Files**: `pos_tui.py` - All action methods using `open_main_screen()`
+- [x] Updated action_sales_history, action_inventory, action_reports, etc.
+- [x] In restaurant mode, use `push_screen()` instead of `open_main_screen()`
+- [x] Now properly returns to TableOrderScreen or RestaurantScreen
+
+### BUG-011: Removed extra buttons from TableOrderScreen
+- **Issue**: "Količina" and "Očisti sve" buttons cluttered the UI
+- **Solution**: Removed buttons, kept keyboard shortcuts (Q, C) in footer
+- **Files**: `pos_tui.py` - `TableOrderScreen.compose()`
+- [x] Removed buttons from controls area
+- [x] Keyboard shortcuts still work via footer
 
 ## Phase 8: Additional Features (Future)
 - [ ] Split bill (divide table total among guests)

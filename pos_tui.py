@@ -720,8 +720,8 @@ class TableOrderScreen(Screen):
         Binding("q", "change_quantity", "Količina"),
         Binding("c", "clear_orders", "Očisti"),
         Binding("f5", "print_bill", "Račun"),
-        Binding("p", "print_order", "Porudžbina"),
-        Binding("ctrl+p", "reprint_order", "Ponovi štampu"),
+        Binding("p", "print_order", "Štampaj"),
+        Binding("r", "reprint_order", "Ponovi"),
     ]
 
     def __init__(self, table: dict, table_service):
@@ -753,8 +753,6 @@ class TableOrderScreen(Screen):
             with Horizontal(id="controls"):
                 yield Button("Dodaj [Enter]", id="add-btn", variant="primary")
                 yield Button("Ukloni [-]", id="remove-btn", variant="error")
-                yield Button("Količina [Q]", id="quantity-btn", variant="default")
-                yield Button("Očisti sve [C]", id="clear-btn", variant="warning")
                 yield Button("Štampaj [P]", id="print-order-btn", variant="default")
                 yield Button("Naplati [F5]", id="print-bill-btn", variant="success")
                 yield Button("Nazad [Esc]", id="back-btn", variant="default")
@@ -842,10 +840,6 @@ class TableOrderScreen(Screen):
             self.action_add_item()
         elif btn_id == "remove-btn":
             self.action_remove_item()
-        elif btn_id == "quantity-btn":
-            self.action_change_quantity()
-        elif btn_id == "clear-btn":
-            self.action_clear_orders()
         elif btn_id == "print-order-btn":
             self.action_print_order()
         elif btn_id == "print-bill-btn":
@@ -952,7 +946,11 @@ class TableOrderScreen(Screen):
         # Get new orders (status='ordered')
         new_orders = [o for o in self.orders if o.get('status') == 'ordered']
         if not new_orders:
-            self.notify("Nema novih porudžbina za štampu!", severity="warning")
+            # No new orders - hint about re-print if there's a previous ticket
+            if self.last_printed_ticket:
+                self.notify("Nema novih porudžbina. Pritisnite R za ponovnu štampu.", severity="warning")
+            else:
+                self.notify("Nema porudžbina za štampu!", severity="warning")
             return
 
         # Get waiter name
@@ -980,7 +978,7 @@ class TableOrderScreen(Screen):
                 for order in new_orders:
                     self.table_service.update_order_status(order['id'], 'preparing')
                 self.load_orders()
-                self.notify("Porudžbina poslata! (Ctrl+P za ponovnu štampu)", severity="success")
+                # Note: OrderTicketScreen already shows "Porudžbina poslata na štampanje!"
 
         self.app.push_screen(OrderTicketScreen(ticket_text), handle_ticket_result)
 
@@ -990,12 +988,8 @@ class TableOrderScreen(Screen):
             self.notify("Nema prethodne porudžbine za štampu!", severity="warning")
             return
 
-        # Show ticket screen for re-print
-        def handle_reprint_result(result):
-            if result and result.get('printed'):
-                self.notify("Ponovna štampa uspešna!", severity="success")
-
-        self.app.push_screen(OrderTicketScreen(self.last_printed_ticket), handle_reprint_result)
+        # Show ticket screen for re-print (OrderTicketScreen handles the notification)
+        self.app.push_screen(OrderTicketScreen(self.last_printed_ticket))
 
     def action_print_bill(self) -> None:
         """Print bill and close table - opens payment screen"""
@@ -5144,27 +5138,45 @@ class POSApp(App):
         if not self.require_admin("Upravljanje korisnicima"):
             return
 
-        self.open_main_screen(UserManagementScreen(self.user_service))
+        screen = UserManagementScreen(self.user_service)
+        if self.is_shop_mode:
+            self.open_main_screen(screen)
+        else:
+            self.push_screen(screen)
 
     def action_customers(self) -> None:
         """F10 - Customer management (admin only)"""
         if not self.require_admin("Upravljanje kupcima"):
             return
 
-        self.open_main_screen(CustomerManagementScreen(self.customer_repo))
+        screen = CustomerManagementScreen(self.customer_repo)
+        if self.is_shop_mode:
+            self.open_main_screen(screen)
+        else:
+            self.push_screen(screen)
 
     def action_sales_history(self):
         """F7 - Sales history view"""
-        self.open_main_screen(
-            SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
-        )
+        if self.is_shop_mode:
+            self.open_main_screen(
+                SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
+            )
+        else:
+            # In restaurant mode, just push on top of current screen
+            self.push_screen(
+                SalesHistoryScreen(self.unified_sales, self.refund_service, self.current_user)
+            )
 
     def action_otpremnice(self) -> None:
         """F6 - Otpremnice management (admin only)"""
         if not self.require_admin("Otpremnice"):
             return
 
-        self.open_main_screen(OtpremniceScreen(self.pos, self.invoice_repo))
+        screen = OtpremniceScreen(self.pos, self.invoice_repo)
+        if self.is_shop_mode:
+            self.open_main_screen(screen)
+        else:
+            self.push_screen(screen)
 
     def handle_login(self, user: dict) -> None:
         """Handle successful login"""
@@ -5654,18 +5666,24 @@ class POSApp(App):
         if not self.require_admin("Upravljanje inventarom"):
             return
 
-        self.open_main_screen(InventoryManagementScreen(self.pos))
+        screen = InventoryManagementScreen(self.pos)
+        if self.is_shop_mode:
+            self.open_main_screen(screen)
+        else:
+            self.push_screen(screen)
 
     def action_reports(self) -> None:
         # Cashiers can see basic reports, admins see all
         """F4 - Reports"""
-        self.open_main_screen(
-            ReportsScreen(
-                self.daily_reports,
-                self.reports,
-                self.is_admin()
-            )
-        ) 
+        screen = ReportsScreen(
+            self.daily_reports,
+            self.reports,
+            self.is_admin()
+        )
+        if self.is_shop_mode:
+            self.open_main_screen(screen)
+        else:
+            self.push_screen(screen) 
 
     def action_show_help(self) -> None:
         """F1 - Show help"""
