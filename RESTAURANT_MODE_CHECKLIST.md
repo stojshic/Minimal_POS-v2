@@ -76,6 +76,37 @@
   - [ ] Most popular items
 - [ ] Table history view (past sessions)
 
+## Bug Fixes & UI Consistency
+
+### BUG-001: Table shows "occupied" (yellow) without orders
+- **Issue**: Opening a table creates a session, marking it "occupied" even with zero orders
+- **Current behavior**: `occupied = True` if `session_id` exists
+- **Expected behavior**: `occupied = True` only if table has orders (total > 0)
+- **Files**: `pos_business_logic.py` - `get_tables_with_status()`
+- [ ] Fix: Check if `total > 0` instead of just checking `session_id`
+- [ ] Consider: Auto-close empty sessions when user leaves TableOrderScreen
+
+### BUG-002: Menu table missing click-to-add functionality
+- **Issue**: In shop mode, clicking/Enter on inventory adds item to cart. In restaurant mode, must use button.
+- **Shop mode**: `POSApp.on_data_table_row_selected()` handles Enter/click → adds to cart
+- **Restaurant mode**: No `on_data_table_row_selected()` in `TableOrderScreen`
+- **Files**: `pos_tui.py` - `TableOrderScreen`
+- [ ] Add `on_data_table_row_selected()` to `TableOrderScreen` for menu-table
+
+### BUG-003: Menu table missing zebra stripes
+- **Issue**: Shop mode inventory table has `zebra_stripes=True`, restaurant menu table doesn't
+- **Shop mode**: `DataTable(id="inventory-table", zebra_stripes=True)`
+- **Restaurant mode**: `DataTable(id="menu-table")` - no zebra_stripes
+- **Files**: `pos_tui.py` - `TableOrderScreen.compose()`
+- [ ] Add `zebra_stripes=True` to menu-table
+
+### CODE-001: Consider unifying inventory/menu display component
+- **Issue**: Shop and restaurant modes duplicate similar inventory browsing logic
+- **Consideration**: Could create a shared `InventoryBrowserWidget` or similar
+- **Pros**: Less code duplication, consistent behavior
+- **Cons**: Adds complexity, may have subtle behavior differences
+- [ ] Evaluate if unification is worth the complexity (decision: later)
+
 ## Phase 8: Additional Features (Future)
 - [ ] Split bill (divide table total among guests)
 - [ ] Transfer items between tables
