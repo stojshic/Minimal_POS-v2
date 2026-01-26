@@ -131,6 +131,58 @@
 - [x] Updated `load_tables()` to render proper grid with placeholders
 - [x] Added `.table-placeholder` CSS class matching button dimensions
 
+### BUG-004: Order items not aggregated (same item = multiple rows) ✅ FIXED
+- **Issue**: Adding same item twice creates two separate rows instead of incrementing quantity
+- **Shop mode**: Cart aggregates items (Coca Cola x2 instead of 2 separate rows)
+- **Restaurant mode**: Each add creates a new order row
+- **Expected**: Same item should increment quantity, not create duplicate rows
+- **Files**: `pos_business_logic.py` - `TableService.add_order()`, `pos_db_layer.py` - `TableOrderRepository`
+- [x] Added `find_order_by_item()` method to check if item exists
+- [x] Added `increment_quantity()` method to update existing orders
+- [x] Updated `TableService.add_order()` to aggregate items
+
+### BUG-005: "Naplati" button doesn't open payment screen ✅ FIXED
+- **Issue**: Clicking "Naplati" should open PaymentScreen for cash/card selection like shop mode
+- **Current**: Closes table directly without payment method selection
+- **Expected**: Open PaymentScreen → select payment → generate receipt → close table
+- **Files**: `pos_tui.py` - `TableOrderScreen.action_print_bill()`
+- [x] Integrated with existing PaymentScreen
+- [x] Added `handle_payment_result()` to process payment
+- [x] Sales saved to unified sales table via `POSService.sell_items()`
+- [x] Receipt shown in ReceiptViewerScreen
+
+### BUG-006: No re-print option for order tickets ✅ FIXED
+- **Issue**: If printer fails, no way to re-print the last order ticket
+- **Current**: After print, orders marked as 'preparing' - can't print again
+- **Solution**: Added Ctrl+P shortcut and notification hint
+- **Files**: `pos_tui.py` - `TableOrderScreen`
+- [x] Added `last_printed_ticket` property to store ticket text
+- [x] Added `action_reprint_order()` method
+- [x] Added Ctrl+P binding
+- [x] Updated notification: "Porudžbina poslata! (Ctrl+P za ponovnu štampu)"
+
+### BUG-007: Search input still causes error in restaurant mode ✅ FIXED
+- **Issue**: Searching in TableOrderScreen still triggers POSApp handler
+- **Error**: "More values provided than there are columns" at lines 5201, 5171
+- **Root cause**: Event bubbling from TableOrderScreen to POSApp
+- **Files**: `pos_tui.py` - `POSApp.on_input_changed()`, `POSApp.on_input_submitted()`
+- [x] Added `is_shop_mode` flag to POSApp
+- [x] Event handlers now check flag before processing
+
+### BUG-008: Cart buttons don't work in restaurant mode ✅ FIXED
+- **Issue**: Need "Očisti korpu", "Izmeni količinu" equivalent for restaurant mode
+- **Files**: `pos_tui.py` - `TableOrderScreen`
+- [x] Added "Količina [Q]" button and `action_change_quantity()` method
+- [x] Added "Očisti sve [C]" button and `action_clear_orders()` method
+- [x] Added corresponding key bindings (Q, C)
+
+### BUG-009: Restaurant sales not appearing in "Prethodni računi" ✅ FIXED
+- **Issue**: After closing table, sales don't appear in receipt history
+- **Root cause**: Using TableService.close_table() instead of POSService.sell_items()
+- **Files**: `pos_tui.py` - `TableOrderScreen.handle_payment_result()`
+- [x] Now uses `POSService.sell_items()` which saves to unified sales table
+- [x] Receipt text stored properly for history view
+
 ## Phase 8: Additional Features (Future)
 - [ ] Split bill (divide table total among guests)
 - [ ] Transfer items between tables

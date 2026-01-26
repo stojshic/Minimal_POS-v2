@@ -717,8 +717,11 @@ class TableOrderScreen(Screen):
         Binding("escape", "back", "Nazad"),
         Binding("enter", "add_item", "Dodaj"),
         Binding("-", "remove_item", "Ukloni"),
+        Binding("q", "change_quantity", "Količina"),
+        Binding("c", "clear_orders", "Očisti"),
         Binding("f5", "print_bill", "Račun"),
         Binding("p", "print_order", "Porudžbina"),
+        Binding("ctrl+p", "reprint_order", "Ponovi štampu"),
     ]
 
     def __init__(self, table: dict, table_service):
@@ -727,6 +730,7 @@ class TableOrderScreen(Screen):
         self.table_service = table_service
         self.session_id = None
         self.orders = []
+        self.last_printed_ticket = None  # Store last ticket for re-printing
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -749,7 +753,9 @@ class TableOrderScreen(Screen):
             with Horizontal(id="controls"):
                 yield Button("Dodaj [Enter]", id="add-btn", variant="primary")
                 yield Button("Ukloni [-]", id="remove-btn", variant="error")
-                yield Button("Štampaj porudžbinu [P]", id="print-order-btn", variant="default")
+                yield Button("Količina [Q]", id="quantity-btn", variant="default")
+                yield Button("Očisti sve [C]", id="clear-btn", variant="warning")
+                yield Button("Štampaj [P]", id="print-order-btn", variant="default")
                 yield Button("Naplati [F5]", id="print-bill-btn", variant="success")
                 yield Button("Nazad [Esc]", id="back-btn", variant="default")
 
@@ -836,6 +842,10 @@ class TableOrderScreen(Screen):
             self.action_add_item()
         elif btn_id == "remove-btn":
             self.action_remove_item()
+        elif btn_id == "quantity-btn":
+            self.action_change_quantity()
+        elif btn_id == "clear-btn":
+            self.action_clear_orders()
         elif btn_id == "print-order-btn":
             self.action_print_order()
         elif btn_id == "print-bill-btn":
@@ -881,6 +891,62 @@ class TableOrderScreen(Screen):
                 else:
                     self.notify(msg, severity="error")
 
+    def action_change_quantity(self) -> None:
+        """Change quantity of selected order item"""
+        order_table = self.query_one("#order-table", DataTable)
+        if order_table.cursor_row is not None and self.orders:
+            if order_table.cursor_row < len(self.orders):
+                order = self.orders[order_table.cursor_row]
+
+                # Get item info for the screen
+                item_info = {
+                    'item': order['item_name'],
+                    'quantity': order['quantity'],
+                    'price': order['unit_price']
+                }
+
+                def handle_quantity(new_qty):
+                    if new_qty is not None and new_qty > 0:
+                        success, msg = self.table_service.update_order_quantity(
+                            order['id'], new_qty
+                        )
+                        if success:
+                            self.load_orders()
+                            self.notify(msg, severity="information")
+                        else:
+                            self.notify(msg, severity="error")
+                    elif new_qty == 0:
+                        # Remove item if quantity is 0
+                        self.table_service.remove_order(order['id'])
+                        self.load_orders()
+                        self.notify(f"Uklonjeno: {order['item_name']}", severity="warning")
+
+                self.app.push_screen(QuantityInputScreen(item_info), handle_quantity)
+        else:
+            self.notify("Izaberite stavku za izmenu!", severity="warning")
+
+    def action_clear_orders(self) -> None:
+        """Clear all orders from this table"""
+        if not self.orders:
+            self.notify("Nema porudžbina za brisanje!", severity="warning")
+            return
+
+        def confirm_clear(confirmed):
+            if confirmed:
+                # Remove all orders
+                for order in self.orders:
+                    self.table_service.remove_order(order['id'])
+                self.load_orders()
+                self.notify("Sve porudžbine obrisane!", severity="warning")
+
+        self.app.push_screen(
+            ConfirmDialog(
+                "Da li ste sigurni da želite obrisati sve porudžbine?",
+                "Brisanje porudžbina"
+            ),
+            confirm_clear
+        )
+
     def action_print_order(self) -> None:
         """Print order ticket for kitchen/bar"""
         # Get new orders (status='ordered')
@@ -904,6 +970,9 @@ class TableOrderScreen(Screen):
             self.notify("Nema stavki za štampu!", severity="warning")
             return
 
+        # Store ticket for re-printing
+        self.last_printed_ticket = ticket_text
+
         # Show ticket screen
         def handle_ticket_result(result):
             if result and result.get('printed'):
@@ -911,20 +980,118 @@ class TableOrderScreen(Screen):
                 for order in new_orders:
                     self.table_service.update_order_status(order['id'], 'preparing')
                 self.load_orders()
+                self.notify("Porudžbina poslata! (Ctrl+P za ponovnu štampu)", severity="success")
 
         self.app.push_screen(OrderTicketScreen(ticket_text), handle_ticket_result)
 
+    def action_reprint_order(self) -> None:
+        """Re-print the last order ticket"""
+        if not self.last_printed_ticket:
+            self.notify("Nema prethodne porudžbine za štampu!", severity="warning")
+            return
+
+        # Show ticket screen for re-print
+        def handle_reprint_result(result):
+            if result and result.get('printed'):
+                self.notify("Ponovna štampa uspešna!", severity="success")
+
+        self.app.push_screen(OrderTicketScreen(self.last_printed_ticket), handle_reprint_result)
+
     def action_print_bill(self) -> None:
-        """Print bill and close table"""
+        """Print bill and close table - opens payment screen"""
         if not self.orders:
             self.notify("Nema porudžbina za naplatu!", severity="warning")
             return
 
-        # Close session via service
-        success, msg = self.table_service.close_table(self.session_id)
+        # Calculate total
+        total = self.calculate_total()
+
+        # Open payment screen
+        self.app.push_screen(
+            PaymentScreen(total, self.app.customer_repo),
+            self.handle_payment_result
+        )
+
+    def handle_payment_result(self, payment_info: PaymentInfo) -> None:
+        """Handle completed payment from PaymentScreen"""
+        if not payment_info:
+            self.notify("Plaćanje otkazano", severity="warning")
+            return
+
+        # Store payment info for after_payment_complete
+        self.last_payment_info = payment_info
+
+        # Convert orders to sale items format
+        sale_items = []
+        for order in self.orders:
+            sale_items.append({
+                'id': order['item_id'],
+                'quantity': order['quantity']
+            })
+
+        # Process the sale using POSService
+        try:
+            result = self.app.pos.sell_items(
+                items=sale_items,
+                payment_info=payment_info,
+                allow_oversell=CONFIG["allow_oversell"]
+            )
+
+            if not result.success:
+                self.notify(f"Greška: {result.message}", severity="error")
+                return
+
+            # Get the receipt
+            last_sale_id = result.sale_id
+            if last_sale_id:
+                sale_record = self.app.unified_sales.get_by_id(last_sale_id)
+
+                if sale_record and sale_record.get('receipt_text'):
+                    # Prepare sale_data for receipt viewer
+                    from datetime import datetime
+                    sale_data = {
+                        'items': result.sale_items,
+                        'customer_info': result.customer_info,
+                        'payment_info': {
+                            'payment_type': payment_info.payment_type,
+                            'cash_amount': payment_info.cash_amount,
+                            'card_amount': payment_info.card_amount,
+                            'amount_tendered': payment_info.amount_tendered,
+                            'change_given': payment_info.change_given,
+                        },
+                        'timestamp': datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                    }
+
+                    # Add table info to receipt
+                    table_header = f"\n{'=' * 40}\n"
+                    table_header += f"{self.table['name']}".center(40) + "\n"
+                    table_header += f"{'=' * 40}\n"
+                    receipt_text = table_header + sale_record['receipt_text']
+
+                    # Show receipt viewer
+                    self.app.push_screen(
+                        ReceiptViewerScreen(receipt_text, last_sale_id, sale_data),
+                        self.after_payment_complete
+                    )
+                else:
+                    self.after_payment_complete()
+            else:
+                self.after_payment_complete()
+
+        except Exception as e:
+            self.notify(f"Greška pri prodaji: {str(e)}", severity="error")
+
+    def after_payment_complete(self, result=None) -> None:
+        """Called after receipt is shown - close the table"""
+        # Get payment type from stored payment info
+        payment_type = getattr(self, 'last_payment_info', None)
+        payment_type = payment_type.payment_type if payment_type else 'cash'
+
+        # Close session
+        success, msg = self.table_service.close_table(self.session_id, payment_type)
 
         if success:
-            self.notify(msg, severity="success")
+            self.notify(f"✅ {self.table['name']} zatvoreno!", severity="success")
             self.dismiss({"closed": True})
         else:
             self.notify(msg, severity="error")
@@ -4898,6 +5065,9 @@ class POSApp(App):
         self.cart = []
         self.cart_total = 0.0
 
+        # Store mode flag (set after login based on config)
+        self.is_shop_mode = False
+
     def compose(self) -> ComposeResult:
         """Create child widgets"""
         yield Header()
@@ -5022,9 +5192,11 @@ class POSApp(App):
 
             if store_type == "restaurant":
                 # Restaurant mode - show table grid
+                self.is_shop_mode = False
                 self.push_screen(RestaurantScreen())
             else:
                 # Shop mode - setup sales interface
+                self.is_shop_mode = True
                 self._setup_shop_mode()
         else:
             # Login failed or cancelled - quit app
@@ -5179,11 +5351,8 @@ class POSApp(App):
     def on_input_changed(self, event: Input.Changed) -> None:
         """Live search as user types"""
         if event.input.id == "search-input":
-            # Only handle if we're in shop mode (inventory-table exists)
-            try:
-                self.query_one("#inventory-table", DataTable)
-            except Exception:
-                # Not in shop mode - let the event propagate to other screens
+            # Only handle if we're in shop mode
+            if not self.is_shop_mode:
                 return
 
             search_term = event.value.strip()
@@ -5203,13 +5372,11 @@ class POSApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle Enter key in search box"""
         if event.input.id == "search-input":
-            # Only handle if we're in shop mode (inventory-table exists)
-            try:
-                inv_table = self.query_one("#inventory-table", DataTable)
-            except Exception:
-                # Not in shop mode - let the event propagate to other screens
+            # Only handle if we're in shop mode
+            if not self.is_shop_mode:
                 return
 
+            inv_table = self.query_one("#inventory-table", DataTable)
             search_term = event.value.strip()
 
             if search_term:

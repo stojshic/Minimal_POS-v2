@@ -1158,31 +1158,39 @@ class TableService:
         quantity: float = 1.0,
         notes: str = ""
     ) -> Tuple[bool, str]:
-        """Add an item to a table's order"""
+        """Add an item to a table's order (aggregates if item already exists)"""
         # Get item from inventory
         item = self.inventory.get_by_id(item_id)
         if not item:
             return False, "Artikal nije pronađen"
 
-        # Get item_type (default to 'other' for backward compatibility)
-        item_type = item.get('item_type', 'other')
+        # Check if this item already exists in the session
+        existing_order = self.orders.find_order_by_item(session_id, item_id)
 
-        # Add order
-        order_id = self.orders.add_order(
-            session_id=session_id,
-            item_id=item_id,
-            item_name=item['item'],
-            quantity=quantity,
-            unit_price=item['price'],
-            item_type=item_type,
-            notes=notes
-        )
+        if existing_order:
+            # Item exists - increment quantity
+            new_qty = existing_order['quantity'] + quantity
+            self.orders.increment_quantity(existing_order['id'], quantity)
+            msg = f"Ažurirano: {new_qty:.0f}x {item['item']}"
+        else:
+            # New item - add to orders
+            item_type = item.get('item_type', 'other')
+            order_id = self.orders.add_order(
+                session_id=session_id,
+                item_id=item_id,
+                item_name=item['item'],
+                quantity=quantity,
+                unit_price=item['price'],
+                item_type=item_type,
+                notes=notes
+            )
+            msg = f"Dodato: {quantity:.0f}x {item['item']}"
 
         # Update session total
         total = self.orders.get_session_total(session_id)
         self.sessions.update_total(session_id, total)
 
-        return True, f"Dodato: {quantity}x {item['item']}"
+        return True, msg
 
     def remove_order(self, order_id: int) -> Tuple[bool, str]:
         """Remove an order from a table"""

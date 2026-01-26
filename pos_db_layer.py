@@ -2077,6 +2077,31 @@ class TableOrderRepository:
             )
             return cursor.fetchone()[0]
 
+    def find_order_by_item(self, session_id: int, item_id: int) -> Optional[Dict[str, Any]]:
+        """Find existing order for an item in a session (for aggregation)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM table_orders
+                WHERE session_id = ? AND item_id = ?
+                LIMIT 1
+            """, (session_id, item_id))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def increment_quantity(self, order_id: int, additional_qty: float) -> bool:
+        """Increment order quantity by additional amount"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE table_orders
+                   SET quantity = quantity + ?,
+                       total_price = (quantity + ?) * unit_price
+                   WHERE id = ?""",
+                (additional_qty, additional_qty, order_id)
+            )
+            return cursor.rowcount > 0
+
     def get_orders_by_status(self, session_id: int, status: str) -> List[Dict[str, Any]]:
         """Get orders filtered by status"""
         with self.db.get_connection() as conn:
