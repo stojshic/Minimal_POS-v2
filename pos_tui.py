@@ -673,7 +673,7 @@ class TableHistoryScreen(Screen):
         """Show session details when row selected"""
         self.show_session_details(event.cursor_row)
 
-    def on_data_table_cursor_changed(self, event: DataTable.CursorChanged) -> None:
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         """Update details when cursor moves"""
         if event.cursor_row is not None and event.cursor_row < len(self.sessions):
             self.show_session_details(event.cursor_row)
