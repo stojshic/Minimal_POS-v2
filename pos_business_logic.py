@@ -767,6 +767,71 @@ class DailyReportService:
             'refunds': refunds
         }
 
+    def generate_restaurant_report(self, date: str, session_repo) -> dict:
+        """
+        Generate restaurant-specific daily report
+
+        Args:
+            date: Date in format 'YYYY-MM-DD'
+            session_repo: TableSessionRepository instance
+
+        Returns:
+            Dict containing restaurant report data
+        """
+        # Get session data for the date
+        sessions = session_repo.get_sessions_by_date(date)
+        sales_by_table = session_repo.get_sales_by_table(date)
+        sales_by_waiter = session_repo.get_sales_by_waiter(date)
+        turnover_stats = session_repo.get_turnover_stats(date)
+
+        if not sessions:
+            return {
+                'date': date,
+                'has_data': False,
+                'message': 'Nema podataka za ovaj datum'
+            }
+
+        # Calculate totals
+        total_revenue = sum(s['total_amount'] or 0 for s in sessions)
+        total_sessions = len(sessions)
+
+        # Payment breakdown
+        payment_breakdown = {}
+        for session in sessions:
+            ptype = session.get('payment_type', 'cash')
+            if ptype not in payment_breakdown:
+                payment_breakdown[ptype] = {'count': 0, 'total': 0}
+            payment_breakdown[ptype]['count'] += 1
+            payment_breakdown[ptype]['total'] += session['total_amount'] or 0
+
+        # Hourly breakdown
+        hourly_sessions = {}
+        for session in sessions:
+            if session.get('closed_at'):
+                hour = session['closed_at'].split('T')[1].split(':')[0] if 'T' in session['closed_at'] else session['closed_at'].split()[1].split(':')[0]
+                if hour not in hourly_sessions:
+                    hourly_sessions[hour] = {'count': 0, 'revenue': 0}
+                hourly_sessions[hour]['count'] += 1
+                hourly_sessions[hour]['revenue'] += session['total_amount'] or 0
+
+        return {
+            'date': date,
+            'has_data': True,
+            'summary': {
+                'total_revenue': total_revenue,
+                'total_sessions': total_sessions,
+                'avg_ticket': total_revenue / total_sessions if total_sessions > 0 else 0,
+                'avg_duration_minutes': turnover_stats.get('avg_duration_minutes') or 0,
+                'min_duration_minutes': turnover_stats.get('min_duration_minutes') or 0,
+                'max_duration_minutes': turnover_stats.get('max_duration_minutes') or 0
+            },
+            'sales_by_table': sales_by_table,
+            'sales_by_waiter': sales_by_waiter,
+            'payment_breakdown': payment_breakdown,
+            'hourly_sessions': sorted(hourly_sessions.items()),
+            'sessions': sessions
+        }
+
 
 class UserService:
     """Service for user management and authentication"""

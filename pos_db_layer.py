@@ -1389,6 +1389,121 @@ class TableSessionRepository:
             row = cursor.fetchone()
             return row['last_ticket'] if row else None
 
+    # ============================================================
+    # Report Methods
+    # ============================================================
+
+    def get_sessions_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """Get all closed sessions for a specific date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                FROM table_sessions s
+                JOIN restaurant_tables t ON s.table_id = t.id
+                LEFT JOIN users u ON s.waiter_id = u.id
+                WHERE DATE(s.closed_at) = ? AND s.status = 'closed'
+                ORDER BY s.closed_at
+            """, (date,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_sales_by_table(self, date: str) -> List[Dict[str, Any]]:
+        """Get sales grouped by table for a date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    t.id as table_id,
+                    t.name as table_name,
+                    COUNT(s.id) as session_count,
+                    COALESCE(SUM(s.total_amount), 0) as total_revenue,
+                    AVG(
+                        CASE WHEN s.closed_at IS NOT NULL
+                        THEN (julianday(s.closed_at) - julianday(s.opened_at)) * 24 * 60
+                        ELSE NULL END
+                    ) as avg_duration_minutes
+                FROM restaurant_tables t
+                LEFT JOIN table_sessions s ON t.id = s.table_id
+                    AND DATE(s.closed_at) = ? AND s.status = 'closed'
+                WHERE t.is_active = 1
+                GROUP BY t.id, t.name
+                ORDER BY total_revenue DESC
+            """, (date,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_sales_by_waiter(self, date: str) -> List[Dict[str, Any]]:
+        """Get sales grouped by waiter for a date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    u.id as waiter_id,
+                    u.full_name as waiter_name,
+                    COUNT(s.id) as session_count,
+                    COALESCE(SUM(s.total_amount), 0) as total_revenue,
+                    AVG(s.total_amount) as avg_ticket
+                FROM table_sessions s
+                JOIN users u ON s.waiter_id = u.id
+                WHERE DATE(s.closed_at) = ? AND s.status = 'closed'
+                GROUP BY u.id, u.full_name
+                ORDER BY total_revenue DESC
+            """, (date,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_turnover_stats(self, date: str) -> Dict[str, Any]:
+        """Get table turnover statistics for a date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_sessions,
+                    AVG(
+                        (julianday(closed_at) - julianday(opened_at)) * 24 * 60
+                    ) as avg_duration_minutes,
+                    MIN(
+                        (julianday(closed_at) - julianday(opened_at)) * 24 * 60
+                    ) as min_duration_minutes,
+                    MAX(
+                        (julianday(closed_at) - julianday(opened_at)) * 24 * 60
+                    ) as max_duration_minutes
+                FROM table_sessions
+                WHERE DATE(closed_at) = ? AND status = 'closed'
+                    AND closed_at IS NOT NULL AND opened_at IS NOT NULL
+            """, (date,))
+            row = cursor.fetchone()
+            return dict(row) if row else {
+                'total_sessions': 0,
+                'avg_duration_minutes': 0,
+                'min_duration_minutes': 0,
+                'max_duration_minutes': 0
+            }
+
+    def get_session_history(self, limit: int = 50, table_id: int = None) -> List[Dict[str, Any]]:
+        """Get recent session history"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if table_id:
+                cursor.execute("""
+                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                    FROM table_sessions s
+                    JOIN restaurant_tables t ON s.table_id = t.id
+                    LEFT JOIN users u ON s.waiter_id = u.id
+                    WHERE s.table_id = ? AND s.status = 'closed'
+                    ORDER BY s.closed_at DESC
+                    LIMIT ?
+                """, (table_id, limit))
+            else:
+                cursor.execute("""
+                    SELECT s.*, t.name as table_name, u.full_name as waiter_name
+                    FROM table_sessions s
+                    JOIN restaurant_tables t ON s.table_id = t.id
+                    LEFT JOIN users u ON s.waiter_id = u.id
+                    WHERE s.status = 'closed'
+                    ORDER BY s.closed_at DESC
+                    LIMIT ?
+                """, (limit,))
+            return [dict(row) for row in cursor.fetchall()]
+
 
 class TableOrderRepository:
     """Repository for orders within a table session"""

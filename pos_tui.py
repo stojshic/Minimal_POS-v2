@@ -187,6 +187,9 @@ class RestaurantScreen(Screen):
 
     BINDINGS = [
         Binding("f3", "inventory", "Inventar", show=True),
+        Binding("f4", "reports", "Izveštaji", show=True),
+        Binding("f6", "table_history", "Istorija", show=True),
+        Binding("f7", "sales_history", "Računi", show=True),
         Binding("f8", "manage_tables", "Stolovi", show=True),
         Binding("f9", "back", "Odjava", show=True),
         Binding("r", "refresh", "Osveži"),
@@ -198,6 +201,25 @@ class RestaurantScreen(Screen):
         if action in admin_only:
             return self.app.is_admin()
         return True
+
+    def action_reports(self) -> None:
+        """F4 - Show restaurant reports"""
+        self.app.push_screen(
+            RestaurantReportScreen(
+                self.app.daily_reports,
+                self.app.table_service.sessions
+            )
+        )
+
+    def action_table_history(self) -> None:
+        """F6 - Show table session history"""
+        self.app.push_screen(
+            TableHistoryScreen(self.app.table_service.sessions)
+        )
+
+    def action_sales_history(self) -> None:
+        """F7 - Show sales history"""
+        self.app.action_sales_history()
 
     def __init__(self):
         super().__init__()
@@ -312,6 +334,376 @@ class RestaurantScreen(Screen):
         """Handle when tables are updated from management screen"""
         # Always refresh from database
         self.load_tables()
+
+
+class RestaurantReportScreen(Screen):
+    """Restaurant-specific reports screen"""
+
+    CSS = """
+    RestaurantReportScreen {
+        background: $surface;
+    }
+
+    #report-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #report-header {
+        dock: top;
+        height: 3;
+        padding: 1;
+        background: $primary;
+        text-align: center;
+    }
+
+    #report-content {
+        height: 1fr;
+        padding: 1;
+        overflow-y: auto;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    .section-title {
+        text-style: bold;
+        color: $accent;
+        padding: 1 0;
+    }
+
+    DataTable {
+        height: auto;
+        max-height: 15;
+        margin-bottom: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Nazad"),
+        Binding("left", "prev_day", "Prethodni dan"),
+        Binding("right", "next_day", "Sledeći dan"),
+        Binding("t", "today", "Danas"),
+    ]
+
+    def __init__(self, daily_reports, session_repo):
+        super().__init__()
+        self.daily_reports = daily_reports
+        self.session_repo = session_repo
+        self.current_date = None
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Vertical(id="report-container"):
+            yield Static("📊 IZVEŠTAJ RESTORANA", id="report-header")
+
+            with Vertical(id="report-content"):
+                yield Input(placeholder="Datum (YYYY-MM-DD)", id="date-input")
+
+                yield Label("📋 REZIME", classes="section-title")
+                yield Static("", id="summary-content")
+
+                yield Label("🍽️ PRODAJA PO STOLOVIMA", classes="section-title")
+                yield DataTable(id="table-sales", zebra_stripes=True)
+
+                yield Label("👤 PRODAJA PO KONOBARIMA", classes="section-title")
+                yield DataTable(id="waiter-sales", zebra_stripes=True)
+
+                yield Label("⏱️ PROMET PO SATIMA", classes="section-title")
+                yield DataTable(id="hourly-sales", zebra_stripes=True)
+
+            with Horizontal(id="controls"):
+                yield Button("◀ Prethodni", id="prev-btn", variant="default")
+                yield Button("Danas", id="today-btn", variant="primary")
+                yield Button("Sledeći ▶", id="next-btn", variant="default")
+                yield Button("Zatvori [Esc]", id="close-btn", variant="error")
+
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Setup tables and load today's report"""
+        from datetime import datetime
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = self.current_date
+
+        # Setup data tables
+        table_sales = self.query_one("#table-sales", DataTable)
+        table_sales.add_columns("Sto", "Sesija", "Promet", "Prosek (min)")
+
+        waiter_sales = self.query_one("#waiter-sales", DataTable)
+        waiter_sales.add_columns("Konobar", "Sesija", "Promet", "Prosečan račun")
+
+        hourly_sales = self.query_one("#hourly-sales", DataTable)
+        hourly_sales.add_columns("Sat", "Broj", "Promet")
+
+        self.load_report(self.current_date)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle date input"""
+        if event.input.id == "date-input":
+            self.current_date = event.value.strip()
+            self.load_report(self.current_date)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "prev-btn":
+            self.action_prev_day()
+        elif event.button.id == "next-btn":
+            self.action_next_day()
+        elif event.button.id == "today-btn":
+            self.action_today()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def action_prev_day(self) -> None:
+        """Go to previous day"""
+        from datetime import datetime, timedelta
+        current = datetime.strptime(self.current_date, "%Y-%m-%d")
+        self.current_date = (current - timedelta(days=1)).strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = self.current_date
+        self.load_report(self.current_date)
+
+    def action_next_day(self) -> None:
+        """Go to next day"""
+        from datetime import datetime, timedelta
+        current = datetime.strptime(self.current_date, "%Y-%m-%d")
+        self.current_date = (current + timedelta(days=1)).strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = self.current_date
+        self.load_report(self.current_date)
+
+    def action_today(self) -> None:
+        """Go to today"""
+        from datetime import datetime
+        self.current_date = datetime.now().strftime("%Y-%m-%d")
+        self.query_one("#date-input", Input).value = self.current_date
+        self.load_report(self.current_date)
+
+    def action_close(self) -> None:
+        """Close screen"""
+        self.dismiss()
+
+    def load_report(self, date: str) -> None:
+        """Load and display restaurant report"""
+        report = self.daily_reports.generate_restaurant_report(date, self.session_repo)
+
+        # Update summary
+        summary = self.query_one("#summary-content", Static)
+        if not report.get('has_data'):
+            summary.update(f"\n  {report.get('message', 'Nema podataka')}\n")
+            self._clear_tables()
+            return
+
+        s = report['summary']
+        summary_text = f"""
+  Ukupan promet:     {s['total_revenue']:>12.2f} RSD
+  Broj sesija:       {s['total_sessions']:>12}
+  Prosečan račun:    {s['avg_ticket']:>12.2f} RSD
+  Prosečno trajanje: {s['avg_duration_minutes']:>12.1f} min
+  Min trajanje:      {s['min_duration_minutes']:>12.1f} min
+  Max trajanje:      {s['max_duration_minutes']:>12.1f} min
+"""
+        summary.update(summary_text)
+
+        # Update table sales
+        table_sales = self.query_one("#table-sales", DataTable)
+        table_sales.clear()
+        for row in report.get('sales_by_table', []):
+            if row['session_count'] > 0:
+                table_sales.add_row(
+                    row['table_name'],
+                    str(row['session_count']),
+                    f"{row['total_revenue']:.2f}",
+                    f"{row['avg_duration_minutes'] or 0:.1f}"
+                )
+
+        # Update waiter sales
+        waiter_sales = self.query_one("#waiter-sales", DataTable)
+        waiter_sales.clear()
+        for row in report.get('sales_by_waiter', []):
+            waiter_sales.add_row(
+                row['waiter_name'] or 'Nepoznat',
+                str(row['session_count']),
+                f"{row['total_revenue']:.2f}",
+                f"{row['avg_ticket'] or 0:.2f}"
+            )
+
+        # Update hourly sales
+        hourly_sales = self.query_one("#hourly-sales", DataTable)
+        hourly_sales.clear()
+        for hour, data in report.get('hourly_sessions', []):
+            hourly_sales.add_row(
+                f"{hour}:00",
+                str(data['count']),
+                f"{data['revenue']:.2f}"
+            )
+
+    def _clear_tables(self) -> None:
+        """Clear all data tables"""
+        self.query_one("#table-sales", DataTable).clear()
+        self.query_one("#waiter-sales", DataTable).clear()
+        self.query_one("#hourly-sales", DataTable).clear()
+
+
+class TableHistoryScreen(Screen):
+    """Screen for viewing past table sessions"""
+
+    CSS = """
+    TableHistoryScreen {
+        background: $surface;
+    }
+
+    #history-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #history-header {
+        dock: top;
+        height: 3;
+        padding: 1;
+        background: $primary;
+        text-align: center;
+    }
+
+    #session-details {
+        height: auto;
+        max-height: 10;
+        padding: 1;
+        background: $panel;
+        margin-bottom: 1;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+
+    DataTable {
+        height: 1fr;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Nazad"),
+        Binding("enter", "view_details", "Detalji"),
+    ]
+
+    def __init__(self, session_repo, table_id: int = None):
+        super().__init__()
+        self.session_repo = session_repo
+        self.table_id = table_id  # Optional filter by table
+        self.sessions = []
+
+    def compose(self) -> ComposeResult:
+        title = "📜 ISTORIJA SESIJA"
+        if self.table_id:
+            title += f" (Sto #{self.table_id})"
+
+        yield Header()
+        with Vertical(id="history-container"):
+            yield Static(title, id="history-header")
+            yield Static("Izaberite sesiju za detalje", id="session-details")
+            yield DataTable(id="sessions-table", zebra_stripes=True)
+            with Horizontal(id="controls"):
+                yield Button("Detalji [Enter]", id="details-btn", variant="primary")
+                yield Button("Zatvori [Esc]", id="close-btn", variant="error")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Setup table and load data"""
+        table = self.query_one("#sessions-table", DataTable)
+        table.add_columns("ID", "Sto", "Konobar", "Početak", "Kraj", "Trajanje", "Iznos", "Plaćanje")
+        table.cursor_type = "row"
+        self.load_sessions()
+
+    def load_sessions(self) -> None:
+        """Load session history from database"""
+        self.sessions = self.session_repo.get_session_history(limit=100, table_id=self.table_id)
+
+        table = self.query_one("#sessions-table", DataTable)
+        table.clear()
+
+        for session in self.sessions:
+            # Calculate duration
+            duration = ""
+            if session.get('opened_at') and session.get('closed_at'):
+                try:
+                    from datetime import datetime
+                    # Handle ISO format with T separator
+                    opened = session['opened_at'].replace('T', ' ')
+                    closed = session['closed_at'].replace('T', ' ')
+                    start = datetime.strptime(opened[:19], "%Y-%m-%d %H:%M:%S")
+                    end = datetime.strptime(closed[:19], "%Y-%m-%d %H:%M:%S")
+                    mins = int((end - start).total_seconds() / 60)
+                    duration = f"{mins} min"
+                except:
+                    duration = "-"
+
+            # Format timestamps for display
+            opened_display = session.get('opened_at', '')[:16].replace('T', ' ')
+            closed_display = session.get('closed_at', '')[:16].replace('T', ' ') if session.get('closed_at') else '-'
+
+            table.add_row(
+                str(session['id']),
+                session.get('table_name', '-'),
+                session.get('waiter_name', '-') or '-',
+                opened_display,
+                closed_display,
+                duration,
+                f"{session.get('total_amount', 0) or 0:.2f}",
+                session.get('payment_type', '-') or '-'
+            )
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "details-btn":
+            self.action_view_details()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Show session details when row selected"""
+        self.show_session_details(event.cursor_row)
+
+    def on_data_table_cursor_changed(self, event: DataTable.CursorChanged) -> None:
+        """Update details when cursor moves"""
+        if event.cursor_row is not None and event.cursor_row < len(self.sessions):
+            self.show_session_details(event.cursor_row)
+
+    def show_session_details(self, row_index: int) -> None:
+        """Show details for selected session"""
+        if row_index >= len(self.sessions):
+            return
+
+        session = self.sessions[row_index]
+        details = self.query_one("#session-details", Static)
+
+        detail_text = f"""
+  Sesija #{session['id']} - {session.get('table_name', '-')}
+  Konobar: {session.get('waiter_name', '-') or 'Nepoznat'}
+  Status: {session.get('status', '-')}
+  Ukupno: {session.get('total_amount', 0) or 0:.2f} RSD
+  Plaćanje: {session.get('payment_type', '-') or '-'}
+"""
+        details.update(detail_text)
+
+    def action_view_details(self) -> None:
+        """View full details of selected session"""
+        table = self.query_one("#sessions-table", DataTable)
+        if table.cursor_row is not None and table.cursor_row < len(self.sessions):
+            self.show_session_details(table.cursor_row)
+
+    def action_close(self) -> None:
+        """Close screen"""
+        self.dismiss()
 
 
 class TableManagementScreen(Screen):
@@ -719,7 +1111,9 @@ class TableOrderScreen(Screen):
         Binding("-", "remove_item", "Ukloni"),
         Binding("q", "change_quantity", "Količina"),
         Binding("c", "clear_orders", "Očisti"),
+        Binding("f4", "reports", "Izveštaji"),
         Binding("f5", "print_bill", "Račun"),
+        Binding("f7", "sales_history", "Prethodni"),
         Binding("p", "print_order", "Štampaj"),
         Binding("r", "reprint_order", "Ponovi"),
     ]
@@ -1092,6 +1486,19 @@ class TableOrderScreen(Screen):
             self.dismiss({"closed": True})
         else:
             self.notify(msg, severity="error")
+
+    def action_reports(self) -> None:
+        """F4 - Show restaurant reports"""
+        self.app.push_screen(
+            RestaurantReportScreen(
+                self.app.daily_reports,
+                self.table_service.sessions
+            )
+        )
+
+    def action_sales_history(self) -> None:
+        """F7 - Show sales history"""
+        self.app.action_sales_history()
 
     def action_back(self) -> None:
         """Go back to table grid"""

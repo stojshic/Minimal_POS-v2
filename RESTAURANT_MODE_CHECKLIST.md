@@ -82,12 +82,14 @@
 - [x] Add F3 for inventory access from restaurant mode
 
 ## Phase 7: Reports Integration
-- [ ] Extend daily reports for restaurant mode
-  - [ ] Sales by table
-  - [ ] Sales by waiter
-  - [ ] Average table turnover time
-  - [ ] Most popular items
-- [ ] Table history view (past sessions)
+- [x] Extend daily reports for restaurant mode
+  - [x] Sales by table
+  - [x] Sales by waiter
+  - [x] Average table turnover time
+  - [x] Hourly session breakdown
+- [x] Table history view (past sessions)
+- [x] F4 binding for restaurant reports (RestaurantScreen, TableOrderScreen)
+- [x] F6 binding for table history (RestaurantScreen)
 
 ## Bug Fixes & UI Consistency
 
