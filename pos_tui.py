@@ -5976,17 +5976,17 @@ class POSApp(App):
 
         user_info = self.query_one("#user-info", Static)
 
-        # Get today's sales total
+        # Get today's sales total directly from DB
         from datetime import date
         today = date.today().strftime("%Y-%m-%d")
         today_total = 0.0
 
         try:
-            report = self.daily_reports.generate_daily_report(today)
-            if report.get('has_sales', False) or 'total_revenue' in report:
-                today_total = report.get('total_revenue', 0.0)
+            # Get today's sales directly
+            today_sales = self.unified_sales.get_sales_by_date(today)
+            today_total = sum(s.get('total_amount', 0) for s in today_sales)
         except Exception:
-            pass  # If report fails, just show 0
+            pass  # If query fails, just show 0
 
         user_info.update(
             f"👤 {self.current_user['full_name']} ({self.current_user['role'].upper()}) | "
@@ -6152,6 +6152,11 @@ class POSApp(App):
 
         if action in admin_only_actions:
             return self.is_admin()
+
+        # Shop-only actions - hide in restaurant mode
+        shop_only_actions = {"last_sale", "duplicate_sale"}
+        if action in shop_only_actions:
+            return self.is_shop_mode
 
         return True
 
@@ -6581,7 +6586,7 @@ class POSApp(App):
 
         # Get the most recent sale
         try:
-            recent_sales = self.unified_sales.get_recent(limit=1)
+            recent_sales = self.unified_sales.get_recent_sales(limit=1)
             if not recent_sales:
                 self.notify("Nema prethodnih prodaja", severity="warning")
                 return
