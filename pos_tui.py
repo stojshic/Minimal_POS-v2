@@ -5,7 +5,7 @@ Beautiful terminal interface
 from typing import Optional
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Header, Footer, Button, DataTable, Input, Label, Static
+from textual.widgets import Header, Footer, Button, DataTable, Input, Label, Static, Select
 from textual.binding import Binding
 from textual.screen import Screen 
 from time import time
@@ -13,11 +13,12 @@ from pos_db_layer import (
     Database, InventoryRepository, SalesRepository,
     InvoiceRepository, UserRepository, RefundRepository,
     CustomerRepository, UnifiedSalesRepository,
-    TableRepository, TableSessionRepository, TableOrderRepository
+    TableRepository, TableSessionRepository, TableOrderRepository,
+    CategoryRepository
 )
 from pos_business_logic import (
         POSService, ReportService, PaymentInfo, DailyReportService,
-        UserService, RefundService, TableService
+        UserService, RefundService, TableService, CategoryService
 )
 from config import STORE_CONFIG, CONFIG
 from receipt_printer import OrderTicketPrinter
@@ -192,12 +193,13 @@ class RestaurantScreen(Screen):
         Binding("f7", "sales_history", "Računi", show=True),
         Binding("f8", "manage_tables", "Stolovi", show=True),
         Binding("f9", "back", "Odjava", show=True),
+        Binding("f11", "manage_categories", "Kategorije", show=True),
         Binding("r", "refresh", "Osveži"),
     ]
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         """Control binding visibility based on user role"""
-        admin_only = {"manage_tables", "inventory"}
+        admin_only = {"manage_tables", "inventory", "manage_categories"}
         if action in admin_only:
             return self.app.is_admin()
         return True
@@ -220,6 +222,10 @@ class RestaurantScreen(Screen):
     def action_sales_history(self) -> None:
         """F7 - Show sales history"""
         self.app.action_sales_history()
+
+    def action_manage_categories(self) -> None:
+        """F11 - Manage item categories"""
+        self.app.push_screen(CategoryManagementScreen(self.app.category_service))
 
     def __init__(self):
         super().__init__()
@@ -295,7 +301,7 @@ class RestaurantScreen(Screen):
             table = next((t for t in self.tables if t["id"] == table_id), None)
             if table:
                 self.app.push_screen(
-                    TableOrderScreen(table, self.app.table_service),
+                    TableOrderScreen(table, self.app.table_service, self.app.category_service),
                     self.handle_table_closed
                 )
 
@@ -323,7 +329,7 @@ class RestaurantScreen(Screen):
     def action_inventory(self) -> None:
         """Open inventory management (admin only)"""
         if self.app.require_admin("Inventar"):
-            self.app.push_screen(InventoryManagementScreen(self.app.pos))
+            self.app.push_screen(InventoryManagementScreen(self.app.pos, self.app.category_service))
 
     def action_refresh(self) -> None:
         """Refresh table display"""
@@ -1103,6 +1109,21 @@ class TableOrderScreen(Screen):
     #search-input {
         margin-bottom: 1;
     }
+
+    #category-tabs {
+        height: auto;
+        margin-bottom: 1;
+        overflow-x: auto;
+    }
+
+    .category-tab {
+        min-width: 10;
+        margin-right: 1;
+    }
+
+    .category-tab-active {
+        background: $accent;
+    }
     """
 
     BINDINGS = [
@@ -1118,15 +1139,22 @@ class TableOrderScreen(Screen):
         Binding("r", "reprint_order", "Ponovi"),
     ]
 
-    def __init__(self, table: dict, table_service):
+    def __init__(self, table: dict, table_service, category_service=None):
         super().__init__()
         self.table = table
         self.table_service = table_service
+        self.category_service = category_service
         self.session_id = None
         self.orders = []
+        self.selected_category_id = None  # None means "all categories"
+        self.categories = []
         # Note: last_printed_ticket is now stored in session (database) for persistence
 
     def compose(self) -> ComposeResult:
+        # Load categories for tabs
+        if self.category_service:
+            self.categories = self.category_service.get_all_categories()
+
         yield Header()
         with Vertical(id="table-order-container"):
             yield Static(f"🍽️  {self.table['name'].upper()}", id="table-header")
@@ -1135,6 +1163,14 @@ class TableOrderScreen(Screen):
                 # Left panel - Menu items
                 with Vertical(id="menu-panel"):
                     yield Label("📋 MENI", classes="panel-label")
+
+                    # Category filter tabs
+                    with Horizontal(id="category-tabs"):
+                        yield Button("Sve", id="cat-all", variant="primary", classes="category-tab category-tab-active")
+                        for cat in self.categories:
+                            label = f"{cat['icon']} {cat['name']}" if cat['icon'] else cat['name']
+                            yield Button(label, id=f"cat-{cat['id']}", variant="default", classes="category-tab")
+
                     yield Input(placeholder="Pretraga artikala...", id="search-input")
                     yield DataTable(id="menu-table", zebra_stripes=True)
 
@@ -1173,18 +1209,45 @@ class TableOrderScreen(Screen):
         self.load_orders()
 
     def load_menu(self, search: str = "") -> None:
-        """Load menu items from inventory"""
+        """Load menu items from inventory, optionally filtered by category"""
         menu_table = self.query_one("#menu-table", DataTable)
         menu_table.clear()
 
-        items = self.table_service.inventory.get_all()
+        # Use category filtering if category_service is available
+        if self.category_service and self.selected_category_id is not None:
+            items = self.category_service.get_items_by_category(
+                self.selected_category_id, search
+            )
+        else:
+            # No category filter - show all items (filtered by search if provided)
+            items = self.table_service.inventory.get_by_category(None, search)
+
         for item in items:
-            if search.lower() in item["item"].lower() or search in str(item.get("barcode", "")):
-                menu_table.add_row(
-                    str(item["id"]),
-                    item["item"],
-                    f"{item['price']:.2f}"
-                )
+            menu_table.add_row(
+                str(item["id"]),
+                item["item"],
+                f"{item['price']:.2f}"
+            )
+
+    def update_category_tabs(self) -> None:
+        """Update category tab button appearances"""
+        # Reset all tabs to default
+        all_btn = self.query_one("#cat-all", Button)
+        all_btn.variant = "primary" if self.selected_category_id is None else "default"
+        all_btn.remove_class("category-tab-active")
+        if self.selected_category_id is None:
+            all_btn.add_class("category-tab-active")
+
+        for cat in self.categories:
+            try:
+                btn = self.query_one(f"#cat-{cat['id']}", Button)
+                is_selected = self.selected_category_id == cat['id']
+                btn.variant = "primary" if is_selected else "default"
+                btn.remove_class("category-tab-active")
+                if is_selected:
+                    btn.add_class("category-tab-active")
+            except Exception:
+                pass  # Button might not exist
 
     def load_orders(self) -> None:
         """Load current orders from database"""
@@ -1221,6 +1284,14 @@ class TableOrderScreen(Screen):
         if event.input.id == "search-input":
             self.load_menu(event.value)
 
+    def handle_category_click(self, category_id: Optional[int]) -> None:
+        """Handle category tab selection"""
+        self.selected_category_id = category_id
+        self.update_category_tabs()
+        # Reload menu with current search term
+        search_input = self.query_one("#search-input", Input)
+        self.load_menu(search_input.value)
+
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle Enter/double-click on menu table to add item"""
         if event.data_table.id == "menu-table":
@@ -1229,6 +1300,18 @@ class TableOrderScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button clicks"""
         btn_id = event.button.id
+
+        # Handle category tab clicks
+        if btn_id == "cat-all":
+            self.handle_category_click(None)
+            return
+        elif btn_id.startswith("cat-"):
+            try:
+                category_id = int(btn_id.replace("cat-", ""))
+                self.handle_category_click(category_id)
+                return
+            except ValueError:
+                pass
 
         if btn_id == "add-btn":
             self.action_add_item()
@@ -2056,6 +2139,317 @@ class AddEditCustomerScreen(Screen):
             self.notify(f"❌ Greška: {str(e)}", severity="error")
 
 
+class CategoryManagementScreen(Screen):
+    """Screen for managing item categories"""
+
+    CSS = """
+    CategoryManagementScreen {
+        background: $surface;
+    }
+
+    #category-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #search-section {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #categories-table {
+        height: 1fr;
+        border: solid $primary;
+        margin-bottom: 1;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        background: $panel;
+        padding: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("n", "new_category", "Nova kategorija"),
+        Binding("e", "edit_category", "Izmeni"),
+        Binding("t", "toggle_active", "Aktiviraj/Deaktiviraj"),
+        Binding("d", "delete_category", "Obriši"),
+    ]
+
+    def __init__(self, category_service):
+        super().__init__()
+        self.category_service = category_service
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="category-container"):
+            yield Label("📂 UPRAVLJANJE KATEGORIJAMA", classes="label")
+
+            yield DataTable(id="categories-table")
+
+            with Horizontal(id="controls"):
+                yield Button("Nova [N]", id="new-btn", variant="success")
+                yield Button("Izmeni [E]", id="edit-btn", variant="primary")
+                yield Button("Aktiviraj [T]", id="toggle-btn", variant="warning")
+                yield Button("Obriši [D]", id="delete-btn", variant="error")
+                yield Button("Zatvori [ESC]", id="close-btn", variant="default")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Setup table and load categories"""
+        table = self.query_one("#categories-table", DataTable)
+        table.add_columns("ID", "Ikona", "Naziv", "Redosled", "Artikala", "Status")
+        table.cursor_type = "row"
+
+        self.load_categories()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "new-btn":
+            self.action_new_category()
+        elif event.button.id == "edit-btn":
+            self.action_edit_category()
+        elif event.button.id == "toggle-btn":
+            self.action_toggle_active()
+        elif event.button.id == "delete-btn":
+            self.action_delete_category()
+        elif event.button.id == "close-btn":
+            self.action_close()
+
+    def load_categories(self) -> None:
+        """Load categories into table"""
+        table = self.query_one("#categories-table", DataTable)
+        table.clear()
+
+        categories = self.category_service.get_all_categories(include_inactive=True)
+
+        for cat in categories:
+            item_count = self.category_service.categories.get_item_count(cat['id'])
+            status = "Aktivna" if cat['is_active'] else "Neaktivna"
+            status_display = f"{'✓':^8}" if cat['is_active'] else f"{'✗':^8}"
+
+            table.add_row(
+                str(cat['id']),
+                cat['icon'] or "",
+                cat['name'],
+                str(cat['display_order']),
+                str(item_count),
+                status_display
+            )
+
+    def get_selected_category(self) -> Optional[dict]:
+        """Get currently selected category"""
+        table = self.query_one("#categories-table", DataTable)
+        if table.cursor_row is not None:
+            row = table.get_row_at(table.cursor_row)
+            category_id = int(row[0])
+            return self.category_service.get_category(category_id)
+        return None
+
+    def action_new_category(self) -> None:
+        """Create new category"""
+        self.app.push_screen(
+            AddEditCategoryScreen(self.category_service),
+            self.handle_category_changed
+        )
+
+    def action_edit_category(self) -> None:
+        """Edit selected category"""
+        category = self.get_selected_category()
+        if category:
+            self.app.push_screen(
+                AddEditCategoryScreen(self.category_service, category),
+                self.handle_category_changed
+            )
+        else:
+            self.notify("Izaberite kategoriju!", severity="warning")
+
+    def action_toggle_active(self) -> None:
+        """Toggle category active status"""
+        category = self.get_selected_category()
+        if category:
+            success, msg = self.category_service.toggle_category_active(category['id'])
+            if success:
+                self.notify(msg, severity="success")
+                self.load_categories()
+            else:
+                self.notify(msg, severity="error")
+        else:
+            self.notify("Izaberite kategoriju!", severity="warning")
+
+    def action_delete_category(self) -> None:
+        """Delete category (with confirmation)"""
+        category = self.get_selected_category()
+        if category:
+            if category['id'] == 1:
+                self.notify("Ne možete obrisati kategoriju 'Bez kategorije'!", severity="error")
+                return
+
+            self.app.push_screen(
+                ConfirmDialog(
+                    f"Da li ste sigurni da želite obrisati kategoriju '{category['name']}'?",
+                    "BRISANJE KATEGORIJE"
+                ),
+                lambda confirmed: self.handle_delete(category['id']) if confirmed else None
+            )
+        else:
+            self.notify("Izaberite kategoriju!", severity="warning")
+
+    def handle_delete(self, category_id: int) -> None:
+        """Actually delete category"""
+        success, msg = self.category_service.delete_category(category_id)
+        if success:
+            self.notify(msg, severity="success")
+            self.load_categories()
+        else:
+            self.notify(msg, severity="error")
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def handle_category_changed(self, result) -> None:
+        """Callback after category add/edit"""
+        if result:
+            self.load_categories()
+
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """Handle Enter/double-click on table"""
+        if event.data_table.id == "categories-table":
+            event.stop()
+            self.action_edit_category()
+
+
+class AddEditCategoryScreen(Screen):
+    """Screen for adding or editing a category"""
+
+    CSS = """
+    AddEditCategoryScreen {
+        align: center middle;
+    }
+
+    #category-dialog {
+        width: 60;
+        height: auto;
+        border: thick $success;
+        background: $surface;
+        padding: 2;
+    }
+
+    .input-label {
+        padding: 1 0 0 0;
+    }
+
+    Input {
+        margin-bottom: 1;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, category_service, category: Optional[dict] = None):
+        super().__init__()
+        self.category_service = category_service
+        self.category = category
+        self.is_edit_mode = category is not None
+
+    def compose(self) -> ComposeResult:
+        title = "✏️  IZMENA KATEGORIJE" if self.is_edit_mode else "➕ NOVA KATEGORIJA"
+
+        with Vertical(id="category-dialog"):
+            yield Label(title, classes="label")
+
+            yield Label("Naziv kategorije:", classes="input-label")
+            yield Input(
+                placeholder="Npr. Pivo, Roštilj, Deserti...",
+                id="name-input",
+                value=self.category['name'] if self.category else ""
+            )
+
+            yield Label("Ikona (emoji):", classes="input-label")
+            yield Input(
+                placeholder="Npr. 🍺, 🍽️, 🍰...",
+                id="icon-input",
+                value=self.category.get('icon', '') if self.category else ""
+            )
+
+            yield Label("Redosled prikaza:", classes="input-label")
+            yield Input(
+                placeholder="0-99 (manji broj = ranije)",
+                id="order-input",
+                type="integer",
+                value=str(self.category['display_order']) if self.category else "0"
+            )
+
+            with Horizontal(id="buttons"):
+                yield Button("Sačuvaj", id="save-btn", variant="success")
+                yield Button("Otkaži [ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        """Focus name input"""
+        self.query_one("#name-input", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Handle button clicks"""
+        if event.button.id == "save-btn":
+            self.save_category()
+        elif event.button.id == "cancel-btn":
+            self.action_cancel()
+
+    def save_category(self) -> None:
+        """Save the category"""
+        name = self.query_one("#name-input", Input).value.strip()
+        icon = self.query_one("#icon-input", Input).value.strip()
+        order_str = self.query_one("#order-input", Input).value.strip()
+
+        # Validation
+        if not name:
+            self.notify("Naziv je obavezan!", severity="error")
+            return
+
+        try:
+            display_order = int(order_str) if order_str else 0
+        except ValueError:
+            self.notify("Redosled mora biti broj!", severity="error")
+            return
+
+        try:
+            if self.is_edit_mode:
+                success, msg = self.category_service.update_category(
+                    self.category['id'], name, display_order, icon
+                )
+                if success:
+                    self.notify(f"✅ {msg}", severity="success")
+                    self.dismiss(True)
+                else:
+                    self.notify(f"❌ {msg}", severity="error")
+            else:
+                success, msg, category_id = self.category_service.create_category(
+                    name, display_order, icon
+                )
+                if success:
+                    self.notify(f"✅ {msg}", severity="success")
+                    self.dismiss(True)
+                else:
+                    self.notify(f"❌ {msg}", severity="error")
+
+        except Exception as e:
+            self.notify(f"❌ Greška: {str(e)}", severity="error")
+
+    def action_cancel(self) -> None:
+        """Cancel"""
+        self.dismiss(None)
+
+
 class CustomerSelectScreen(Screen):
     """Screen for selecting a customer during checkout"""
 
@@ -2413,9 +2807,10 @@ class InventoryManagementScreen(Screen):
         Binding("p", "change_price", "Change Price"),
     ]
 
-    def __init__(self, pos_service):
+    def __init__(self, pos_service, category_service=None):
         super().__init__()
         self.pos_service = pos_service
+        self.category_service = category_service
 
     def compose(self) -> ComposeResult:
         with Vertical(id="inventory-container"):
@@ -2437,7 +2832,7 @@ class InventoryManagementScreen(Screen):
     def on_mount(self) -> None:
         """Setup table and load inventory"""
         table = self.query_one("#inventory-table", DataTable)
-        table.add_columns("ID", "Artikal", "Barkod", "Cena", "Količina", "PDV %")
+        table.add_columns("ID", "Artikal", "Kategorija", "Barkod", "Cena", "Količina", "PDV %")
         table.cursor_type = "row"
 
         self.load_inventory()
@@ -2459,9 +2854,14 @@ class InventoryManagementScreen(Screen):
                 stock_display = f"{stock_display:<10}{'⛔':>2}"
             elif item['quantity'] < CONFIG['low_stock_threshold']:
                 stock_display = f"{stock_display:<10}{'🟡':>2}"
+            # Get category display
+            cat_icon = item.get('category_icon') or ""
+            cat_name = item.get('category_name') or "Bez kategorije"
+            category_display = f"{cat_icon} {cat_name}".strip()
             table.add_row(
                 str(item['id']),
                 item['item'],
+                category_display,
                 item.get('barcode') or "",
                 f"{item['price']:.2f}",
                 stock_display,
@@ -2497,14 +2897,17 @@ class InventoryManagementScreen(Screen):
 
     def action_new_item(self) -> None:
         """Create new inventory item"""
-        self.app.push_screen(AddEditItemScreen(self.pos_service), self.handle_item_changed)
+        self.app.push_screen(
+            AddEditItemScreen(self.pos_service, category_service=self.category_service),
+            self.handle_item_changed
+        )
 
     def action_edit_item(self) -> None:
         """Edit selected item"""
         item = self.get_selected_item()
         if item:
             self.app.push_screen(
-                AddEditItemScreen(self.pos_service, item),
+                AddEditItemScreen(self.pos_service, item, category_service=self.category_service),
                 self.handle_item_changed
             )
         else:
@@ -2588,6 +2991,10 @@ class AddEditItemScreen(Screen):
         margin-bottom: 1;
     }
 
+    Select {
+        margin-bottom: 1;
+    }
+
     #vat-selection {
         layout: horizontal;
         height: auto;
@@ -2611,16 +3018,27 @@ class AddEditItemScreen(Screen):
         Binding("escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, pos_service, item: Optional[dict] = None):
+    def __init__(self, pos_service, item: Optional[dict] = None, category_service=None):
         super().__init__()
         self.pos_service = pos_service
+        self.category_service = category_service
         self.item = item  # None for new item, dict for editing
         self.is_edit_mode = item is not None
         self.selected_vat = item.get('vat_rate', 0.20) if item else 0.20
         self.selected_item_type = item.get('item_type', 'other') if item else 'other'
+        self.selected_category_id = item.get('category_id', 1) if item else 1
 
     def compose(self) -> ComposeResult:
         title = "✏️  IZMENA ARTIKLA" if self.is_edit_mode else "➕ NOVI ARTIKAL"
+
+        # Get categories for dropdown
+        category_options = [(1, "Bez kategorije")]
+        if self.category_service:
+            categories = self.category_service.get_all_categories()
+            category_options = [
+                (cat['id'], f"{cat['icon']} {cat['name']}" if cat['icon'] else cat['name'])
+                for cat in categories
+            ]
 
         with Vertical(id="item-dialog"):
             yield Label(title, classes="label")
@@ -2653,6 +3071,14 @@ class AddEditItemScreen(Screen):
                 id="quantity-input",
                 type="number",
                 value=str(self.item['quantity']) if self.item else ""
+            )
+
+            yield Label("Kategorija:", classes="input-label")
+            yield Select(
+                [(label, value) for value, label in category_options],
+                id="category-select",
+                value=self.selected_category_id,
+                allow_blank=False
             )
 
             yield Label("PDV stopa:", classes="input-label")
@@ -2726,12 +3152,21 @@ class AddEditItemScreen(Screen):
         elif event.button.id == "cancel-btn":
             self.action_cancel()
 
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Handle category selection change"""
+        if event.select.id == "category-select":
+            self.selected_category_id = event.value
+
     def save_item(self) -> None:
         """Save the item"""
         name = self.query_one("#name-input", Input).value.strip()
         barcode = self.query_one("#barcode-input", Input).value.strip() or None
         price_str = self.query_one("#price-input", Input).value.strip()
         quantity_str = self.query_one("#quantity-input", Input).value.strip()
+
+        # Get selected category from Select widget
+        category_select = self.query_one("#category-select", Select)
+        category_id = category_select.value if category_select.value != Select.BLANK else 1
 
         # Validation
         if not name:
@@ -2751,18 +3186,18 @@ class AddEditItemScreen(Screen):
 
         try:
             if self.is_edit_mode:
-                # Update existing item - all fields including name, barcode, VAT, item_type
+                # Update existing item - all fields including name, barcode, VAT, item_type, category
                 item_id = self.item['id']
                 self.pos_service.inventory.update_item(
                     item_id, name, barcode, price, quantity, self.selected_vat,
-                    self.selected_item_type
+                    self.selected_item_type, category_id
                 )
                 self.notify(f"✅ Artikal '{name}' ažuriran!", severity="success")
             else:
-                # Add new item with VAT rate and item_type
+                # Add new item with VAT rate, item_type, and category
                 item_id = self.pos_service.inventory.add(
                     name, price, quantity, barcode, self.selected_vat,
-                    self.selected_item_type
+                    self.selected_item_type, category_id
                 )
                 self.notify(f"✅ Artikal '{name}' dodat!", severity="success")
 
@@ -5441,6 +5876,9 @@ class POSApp(App):
         session_repo = TableSessionRepository(db)
         order_repo = TableOrderRepository(db)
 
+        # Category repository
+        category_repo = CategoryRepository(db)
+
         self.pos = POSService(
             inv_repo,
             sales_repo,
@@ -5461,6 +5899,9 @@ class POSApp(App):
 
         # Restaurant mode service
         self.table_service = TableService(table_repo, session_repo, order_repo, inv_repo)
+
+        # Category service
+        self.category_service = CategoryService(category_repo, inv_repo)
 
         # Current logged in user
         self.current_user = None
@@ -6076,7 +6517,7 @@ class POSApp(App):
         if not self.require_admin("Upravljanje inventarom"):
             return
 
-        screen = InventoryManagementScreen(self.pos)
+        screen = InventoryManagementScreen(self.pos, self.category_service)
         if self.is_shop_mode:
             self.open_main_screen(screen)
         else:

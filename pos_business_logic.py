@@ -1178,3 +1178,120 @@ class TableService:
     def get_last_ticket(self, session_id: int) -> Optional[str]:
         """Get last printed ticket for a session"""
         return self.sessions.get_last_ticket(session_id)
+
+
+class CategoryService:
+    """Service for managing item categories"""
+
+    def __init__(self, category_repo, inventory_repo):
+        self.categories = category_repo
+        self.inventory = inventory_repo
+
+    def get_all_categories(self, include_inactive: bool = False) -> List[dict]:
+        """Get all categories, optionally including inactive ones"""
+        return self.categories.get_all(include_inactive)
+
+    def get_category(self, category_id: int) -> Optional[dict]:
+        """Get a specific category by ID"""
+        return self.categories.get_by_id(category_id)
+
+    def create_category(self, name: str, display_order: int = 0, icon: str = "") -> Tuple[bool, str, Optional[int]]:
+        """
+        Create a new category
+
+        Returns:
+            (success, message, category_id)
+        """
+        if not name or not name.strip():
+            return False, "Naziv kategorije je obavezan!", None
+
+        # Check for duplicate name
+        existing = self.categories.get_by_name(name.strip())
+        if existing:
+            return False, f"Kategorija '{name}' već postoji!", None
+
+        try:
+            category_id = self.categories.create(name.strip(), display_order, icon)
+            return True, f"Kategorija '{name}' kreirana", category_id
+        except Exception as e:
+            return False, f"Greška: {str(e)}", None
+
+    def update_category(self, category_id: int, name: str, display_order: int, icon: str) -> Tuple[bool, str]:
+        """
+        Update a category
+
+        Returns:
+            (success, message)
+        """
+        if not name or not name.strip():
+            return False, "Naziv kategorije je obavezan!"
+
+        # Check for duplicate name (excluding current category)
+        existing = self.categories.get_by_name(name.strip())
+        if existing and existing['id'] != category_id:
+            return False, f"Kategorija '{name}' već postoji!"
+
+        try:
+            success = self.categories.update(category_id, name.strip(), display_order, icon)
+            if success:
+                return True, f"Kategorija '{name}' ažurirana"
+            return False, "Greška pri ažuriranju kategorije"
+        except Exception as e:
+            return False, f"Greška: {str(e)}"
+
+    def delete_category(self, category_id: int) -> Tuple[bool, str]:
+        """
+        Delete a category (prevents deleting "Bez kategorije")
+
+        Returns:
+            (success, message)
+        """
+        # Prevent deleting the default "Bez kategorije" category (id=1)
+        if category_id == 1:
+            return False, "Ne možete obrisati kategoriju 'Bez kategorije'!"
+
+        category = self.categories.get_by_id(category_id)
+        if not category:
+            return False, "Kategorija nije pronađena!"
+
+        item_count = self.categories.get_item_count(category_id)
+
+        try:
+            success = self.categories.delete(category_id)
+            if success:
+                msg = f"Kategorija '{category['name']}' obrisana"
+                if item_count > 0:
+                    msg += f" ({item_count} artikala prebačeno u 'Bez kategorije')"
+                return True, msg
+            return False, "Greška pri brisanju kategorije"
+        except Exception as e:
+            return False, f"Greška: {str(e)}"
+
+    def toggle_category_active(self, category_id: int) -> Tuple[bool, str]:
+        """
+        Toggle category active status
+
+        Returns:
+            (success, message)
+        """
+        # Prevent deactivating the default category
+        if category_id == 1:
+            return False, "Ne možete deaktivirati kategoriju 'Bez kategorije'!"
+
+        category = self.categories.get_by_id(category_id)
+        if not category:
+            return False, "Kategorija nije pronađena!"
+
+        new_status = not category['is_active']
+        try:
+            success = self.categories.set_active(category_id, new_status)
+            if success:
+                status_text = "aktivirana" if new_status else "deaktivirana"
+                return True, f"Kategorija '{category['name']}' {status_text}"
+            return False, "Greška pri promeni statusa"
+        except Exception as e:
+            return False, f"Greška: {str(e)}"
+
+    def get_items_by_category(self, category_id: Optional[int] = None, search: str = "") -> List[dict]:
+        """Get inventory items filtered by category and search term"""
+        return self.inventory.get_by_category(category_id, search)

@@ -40,10 +40,8 @@ data.db
 invoices/
 *.pdf
 
-# Internal checklists (dev only)
-checklist.md
-UI_FIXES_CHECKLIST.md
-DB_REFACTORING_CHECKLIST.md
+# Markdown files (internal docs, checklists, analysis)
+*.md
 
 # Test files
 test_*.py

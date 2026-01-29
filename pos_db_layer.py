@@ -268,6 +268,51 @@ class Database:
             """)
 
             # ============================================================
+            # Categories table
+            # ============================================================
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS categories (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    display_order INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    icon TEXT DEFAULT '',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Migration: Add category_id to inventory table if it doesn't exist
+            cursor.execute("PRAGMA table_info(inventory)")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'category_id' not in columns:
+                cursor.execute("ALTER TABLE inventory ADD COLUMN category_id INTEGER REFERENCES categories(id)")
+
+            # Seed default categories if table is empty
+            cursor.execute("SELECT COUNT(*) FROM categories")
+            if cursor.fetchone()[0] == 0:
+                default_categories = [
+                    ("Bez kategorije", 0, 1, ""),
+                    ("Pivo", 1, 1, "🍺"),
+                    ("Vino", 2, 1, "🍷"),
+                    ("Žestoka pića", 3, 1, "🥃"),
+                    ("Sokovi i voda", 4, 1, "🥤"),
+                    ("Kafa i čaj", 5, 1, "☕"),
+                    ("Predjela", 10, 1, "🥗"),
+                    ("Glavno jelo", 11, 1, "🍽️"),
+                    ("Roštilj", 12, 1, "🥩"),
+                    ("Salate", 13, 1, "🥬"),
+                    ("Deserti", 14, 1, "🍰"),
+                ]
+                cursor.executemany(
+                    "INSERT INTO categories (name, display_order, is_active, icon) VALUES (?, ?, ?, ?)",
+                    default_categories
+                )
+
+            # Assign existing items to "Bez kategorije" (id=1) if they have no category
+            cursor.execute("UPDATE inventory SET category_id = 1 WHERE category_id IS NULL")
+
+            # ============================================================
             # Restaurant mode tables
             # ============================================================
 
@@ -367,11 +412,15 @@ class InventoryRepository:
             return dict(row) if row else None
     
     def search(self, search_term: str = "") -> List[Dict[str, Any]]:
-        """Search inventory by item name"""
+        """Search inventory by item name, including category info"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM inventory WHERE item LIKE ? ORDER BY item",
+                """SELECT i.*, c.name as category_name, c.icon as category_icon
+                   FROM inventory i
+                   LEFT JOIN categories c ON i.category_id = c.id
+                   WHERE i.item LIKE ?
+                   ORDER BY i.item""",
                 (f"%{search_term}%",)
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -392,14 +441,14 @@ class InventoryRepository:
         return self.search("")
     
     def add(self, item: str, price: float, quantity: float, barcode: Optional[str] = None,
-            vat_rate: float = 0.20, item_type: str = 'other') -> int:
+            vat_rate: float = 0.20, item_type: str = 'other', category_id: Optional[int] = 1) -> int:
         """Add new inventory item"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO inventory (item, barcode, price, quantity, vat_rate, item_type)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (item, barcode, price, quantity, vat_rate, item_type)
+                """INSERT INTO inventory (item, barcode, price, quantity, vat_rate, item_type, category_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (item, barcode, price, quantity, vat_rate, item_type, category_id)
             )
             return cursor.lastrowid
     
@@ -445,7 +494,7 @@ class InventoryRepository:
 
     def update_item(self, item_id: int, name: str, barcode: Optional[str],
                     price: float, quantity: float, vat_rate: float,
-                    item_type: str = 'other') -> bool:
+                    item_type: str = 'other', category_id: Optional[int] = 1) -> bool:
         """Update all fields of an inventory item"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -457,11 +506,130 @@ class InventoryRepository:
                        quantity = ?,
                        vat_rate = ?,
                        item_type = ?,
+                       category_id = ?,
                        updated_at = CURRENT_TIMESTAMP
                    WHERE id = ?""",
-                (name, barcode, price, quantity, vat_rate, item_type, item_id)
+                (name, barcode, price, quantity, vat_rate, item_type, category_id, item_id)
             )
             return cursor.rowcount > 0
+
+    def get_by_category(self, category_id: Optional[int] = None, search_term: str = "") -> List[Dict[str, Any]]:
+        """Get inventory items filtered by category and optional search term"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if category_id is None:
+                # No category filter - return all items
+                cursor.execute(
+                    """SELECT i.*, c.name as category_name, c.icon as category_icon
+                       FROM inventory i
+                       LEFT JOIN categories c ON i.category_id = c.id
+                       WHERE i.item LIKE ?
+                       ORDER BY i.item""",
+                    (f"%{search_term}%",)
+                )
+            else:
+                cursor.execute(
+                    """SELECT i.*, c.name as category_name, c.icon as category_icon
+                       FROM inventory i
+                       LEFT JOIN categories c ON i.category_id = c.id
+                       WHERE i.category_id = ? AND i.item LIKE ?
+                       ORDER BY i.item""",
+                    (category_id, f"%{search_term}%")
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
+
+class CategoryRepository:
+    """Repository for category management"""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def get_all(self, include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Get all categories ordered by display_order"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            if include_inactive:
+                cursor.execute(
+                    "SELECT * FROM categories ORDER BY display_order, name"
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM categories WHERE is_active = 1 ORDER BY display_order, name"
+                )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_by_id(self, category_id: int) -> Optional[Dict[str, Any]]:
+        """Get category by ID"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM categories WHERE id = ?", (category_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get category by name"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM categories WHERE name = ?", (name,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def create(self, name: str, display_order: int = 0, icon: str = "") -> int:
+        """Create a new category"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO categories (name, display_order, icon)
+                   VALUES (?, ?, ?)""",
+                (name, display_order, icon)
+            )
+            return cursor.lastrowid
+
+    def update(self, category_id: int, name: str, display_order: int, icon: str) -> bool:
+        """Update category"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE categories
+                   SET name = ?, display_order = ?, icon = ?
+                   WHERE id = ?""",
+                (name, display_order, icon, category_id)
+            )
+            return cursor.rowcount > 0
+
+    def set_active(self, category_id: int, is_active: bool) -> bool:
+        """Set category active/inactive"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE categories SET is_active = ? WHERE id = ?",
+                (1 if is_active else 0, category_id)
+            )
+            return cursor.rowcount > 0
+
+    def delete(self, category_id: int) -> bool:
+        """Delete a category (moves items to 'Bez kategorije')"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            # Move items from this category to "Bez kategorije" (id=1)
+            cursor.execute(
+                "UPDATE inventory SET category_id = 1 WHERE category_id = ?",
+                (category_id,)
+            )
+            # Delete the category
+            cursor.execute("DELETE FROM categories WHERE id = ?", (category_id,))
+            return cursor.rowcount > 0
+
+    def get_item_count(self, category_id: int) -> int:
+        """Get count of items in a category"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM inventory WHERE category_id = ?",
+                (category_id,)
+            )
+            return cursor.fetchone()[0]
 
 
 class SalesRepository:
