@@ -1196,17 +1196,27 @@ class TableOrderScreen(Screen):
         success, msg, session_id = self.table_service.open_table(self.table['id'], waiter_id)
         self.session_id = session_id
 
+        # Restore last selected category from app
+        if hasattr(self.app, 'last_category_id') and self.app.last_category_id is not None:
+            self.selected_category_id = self.app.last_category_id
+
         # Setup menu table
         menu_table = self.query_one("#menu-table", DataTable)
         menu_table.add_columns("ID", "Artikal", "Cena")
         menu_table.cursor_type = "row"
         self.load_menu()
 
+        # Update category tabs to reflect restored selection
+        self.update_category_tabs()
+
         # Setup order table
         order_table = self.query_one("#order-table", DataTable)
         order_table.add_columns("ID", "Artikal", "Kol.", "Cena", "Ukupno")
         order_table.cursor_type = "row"
         self.load_orders()
+
+        # Focus search input for quick item entry
+        self.query_one("#search-input", Input).focus()
 
     def load_menu(self, search: str = "") -> None:
         """Load menu items from inventory, optionally filtered by category"""
@@ -1291,6 +1301,10 @@ class TableOrderScreen(Screen):
         # Reload menu with current search term
         search_input = self.query_one("#search-input", Input)
         self.load_menu(search_input.value)
+
+        # Save to app for persistence across table switches
+        if hasattr(self.app, 'last_category_id'):
+            self.app.last_category_id = category_id
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         """Handle Enter/double-click on menu table to add item"""
@@ -5855,7 +5869,9 @@ class POSApp(App):
         Binding("c", "clear_cart", "Očisti korpu"),
         Binding("enter", "add_selected", "Ubaci u korpu"),
         Binding("-", "remove_selected", "Izbaci artikal"),
-        Binding("e", "edit_quantity", "Izmeni količinu")
+        Binding("e", "edit_quantity", "Izmeni količinu"),
+        Binding("l", "last_sale", "Poslednja prodaja"),
+        Binding("d", "duplicate_sale", "Ponovi prodaju"),
     ]
 
     def __init__(self):
@@ -5910,6 +5926,12 @@ class POSApp(App):
         self.cart = []
         self.cart_total = 0.0
 
+        # Store last cart for duplicate sale feature
+        self.last_cart = []
+
+        # Store last selected category for restaurant mode
+        self.last_category_id = None
+
         # Store mode flag (set after login based on config)
         self.is_shop_mode = False
 
@@ -5929,7 +5951,7 @@ class POSApp(App):
 
             # Right panel - Shopping Cart
             with Vertical(id="cart-panel"):
-                yield Label("🛒 KORPA", classes="label")
+                yield Label("🛒 KORPA (0)", classes="label", id="cart-label")
                 yield DataTable(id="cart-table", zebra_stripes=True, cursor_type="row")
                 yield Static("UKUPNO: 0.00 RSD", id="total-label")
 
@@ -5946,6 +5968,30 @@ class POSApp(App):
         """Called when app starts"""
         # Show login screen first
         self.push_screen(LoginScreen(self.user_service), self.handle_login)
+
+    def update_user_info_bar(self) -> None:
+        """Update user info bar with today's sales total"""
+        if not self.current_user:
+            return
+
+        user_info = self.query_one("#user-info", Static)
+
+        # Get today's sales total
+        from datetime import date
+        today = date.today().strftime("%Y-%m-%d")
+        today_total = 0.0
+
+        try:
+            report = self.daily_reports.generate_daily_report(today)
+            if report.get('has_sales', False) or 'total_revenue' in report:
+                today_total = report.get('total_revenue', 0.0)
+        except Exception:
+            pass  # If report fails, just show 0
+
+        user_info.update(
+            f"👤 {self.current_user['full_name']} ({self.current_user['role'].upper()}) | "
+            f"💰 Danas: {today_total:,.0f} RSD | F9: Odjava"
+        )
 
     def update_low_stock_banner(self) -> None:
         """Update low stock warning banner"""
@@ -6037,11 +6083,8 @@ class POSApp(App):
             # Refresh footer to show role-appropriate bindings
             self.refresh_bindings()
 
-            # Update user info bar
-            user_info = self.query_one("#user-info", Static)
-            user_info.update(
-                f"👤 {user['full_name']} ({user['role'].upper()}) | F9: Odjava"
-            )
+            # Update user info bar with today's sales
+            self.update_user_info_bar()
 
             # Update header or show welcome message
             self.notify(
@@ -6113,31 +6156,41 @@ class POSApp(App):
         return True
 
     def action_logout(self) -> None:
-        """F9 - Logout current user"""
-        # Clear cart before logout for security
-        self.cart = []
-        self.cart_total = 0.0
+        """F9 - Logout current user (with confirmation)"""
+        def do_logout(confirmed):
+            if not confirmed:
+                return
 
-        # Clear current user
-        self.current_user = None
+            # Clear cart before logout for security
+            self.cart = []
+            self.cart_total = 0.0
 
-        # Refresh footer to hide admin-only bindings
-        self.refresh_bindings()
+            # Clear current user
+            self.current_user = None
 
-        # Pop all screens back to base to prevent restricted screens from remaining
-        # This fixes the bug where admin logs out on Users screen and cashier still sees it
-        while len(self.screen_stack) > 1:
-            self.pop_screen()
+            # Refresh footer to hide admin-only bindings
+            self.refresh_bindings()
 
-        # Reset cart display
-        self.update_cart_display()
+            # Pop all screens back to base to prevent restricted screens from remaining
+            # This fixes the bug where admin logs out on Users screen and cashier still sees it
+            while len(self.screen_stack) > 1:
+                self.pop_screen()
 
-        # Clear user info bar
-        user_info = self.query_one("#user-info", Static)
-        user_info.update("")
+            # Reset cart display
+            self.update_cart_display()
 
-        # Show login screen again
-        self.push_screen(LoginScreen(self.user_service), self.handle_login)
+            # Clear user info bar
+            user_info = self.query_one("#user-info", Static)
+            user_info.update("")
+
+            # Show login screen again
+            self.push_screen(LoginScreen(self.user_service), self.handle_login)
+
+        # Show confirmation dialog
+        self.push_screen(
+            ConfirmDialog("Da li ste sigurni da želite da se odjavite?", "ODJAVA"),
+            do_logout
+        )
 
     def action_edit_quantity(self) -> None:
         """E - Edit quantity of selected cart item"""
@@ -6347,9 +6400,11 @@ class POSApp(App):
         cart_table.clear()
 
         total = 0.0
+        item_count = 0
         for item in self.cart:
             line_total = item['price'] * item['quantity']
             total += line_total
+            item_count += int(item['quantity'])
 
             cart_table.add_row(
                 item['item'],
@@ -6359,6 +6414,11 @@ class POSApp(App):
             )
 
         self.cart_total = total
+
+        # Update cart label with item count
+        cart_label = self.query_one("#cart-label", Label)
+        cart_label.update(f"🛒 KORPA ({item_count})")
+
         total_label = self.query_one("#total-label", Static)
         total_label.update(f"UKUPNO: {total:.2f} RSD")
 
@@ -6497,6 +6557,9 @@ class POSApp(App):
         # Success message
         self.notify(f"✅ Prodaja uspešna! Ukupno: {self.cart_total:.2f} RSD", severity="success")
 
+        # Save cart for duplicate sale feature before clearing
+        self.last_cart = list(self.cart)
+
         # Clear cart and reload inventory
         self.cart = []
         self.update_cart_display()
@@ -6505,8 +6568,78 @@ class POSApp(App):
         # Update low stock banner
         self.update_low_stock_banner()
 
+        # Update today's sales in header
+        self.update_user_info_bar()
+
         # Focus search for next sale
         self.query_one("#search-input", Input).focus()
+
+    def action_last_sale(self) -> None:
+        """L - Show last sale preview"""
+        if not self.is_shop_mode:
+            return
+
+        # Get the most recent sale
+        try:
+            recent_sales = self.unified_sales.get_recent(limit=1)
+            if not recent_sales:
+                self.notify("Nema prethodnih prodaja", severity="warning")
+                return
+
+            last_sale = recent_sales[0]
+            sale_id = last_sale['id']
+
+            # Get full sale with items
+            sale_with_items = self.unified_sales.get_sale_with_items(sale_id)
+            if not sale_with_items:
+                self.notify("Greška pri učitavanju prodaje", severity="error")
+                return
+
+            sale = sale_with_items['sale']
+            items = sale_with_items['items']
+
+            # Build preview text
+            lines = [
+                f"POSLEDNJA PRODAJA #{sale_id}",
+                f"Vreme: {sale['timestamp']}",
+                "-" * 30,
+            ]
+
+            for item in items:
+                lines.append(f"{item['item_name']} x{item['quantity']} = {item['line_total']:.2f}")
+
+            lines.extend([
+                "-" * 30,
+                f"UKUPNO: {sale['total_amount']:.2f} RSD",
+                f"Plaćanje: {sale['payment_type']}",
+            ])
+
+            # Show in a simple dialog
+            self.push_screen(
+                ConfirmDialog("\n".join(lines), "POSLEDNJA PRODAJA"),
+                lambda x: None  # Dismiss handler does nothing
+            )
+
+        except Exception as e:
+            self.notify(f"Greška: {str(e)}", severity="error")
+
+    def action_duplicate_sale(self) -> None:
+        """D - Duplicate last sale (reload last cart)"""
+        if not self.is_shop_mode:
+            return
+
+        if not self.last_cart:
+            self.notify("Nema prethodne prodaje za ponavljanje", severity="warning")
+            return
+
+        # Clear current cart and load last cart
+        self.cart = []
+        for item in self.last_cart:
+            # Make a copy of each item to avoid reference issues
+            self.cart.append(dict(item))
+
+        self.update_cart_display()
+        self.notify(f"Učitana prethodna prodaja ({len(self.cart)} stavki)", severity="information")
 
     def action_sales(self) -> None:
         """F2 - Sales screen"""
