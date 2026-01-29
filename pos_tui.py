@@ -6606,7 +6606,7 @@ class POSApp(App):
             # Build preview text
             lines = [
                 f"POSLEDNJA PRODAJA #{sale_id}",
-                f"Vreme: {sale['timestamp']}",
+                f"Vreme: {sale['created_at']}",
                 "-" * 30,
             ]
 
