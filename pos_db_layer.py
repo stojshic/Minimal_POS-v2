@@ -930,12 +930,14 @@ class SalesRepository:
             return cursor.lastrowid
 
     def get_recent_sales(self, limit: int = 10) -> List[Dict[str, Any]]:
-        """Get recent sales"""
+        """Get recent sales with proper date from sales table"""
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """SELECT * FROM sold_items 
-                   ORDER BY id DESC LIMIT ?""",
+                """SELECT si.*, COALESCE(si.time, s.created_at) as sale_date
+                   FROM sold_items si
+                   LEFT JOIN sales s ON si.sale_id = s.id
+                   ORDER BY si.id DESC LIMIT ?""",
                 (limit,)
             )
             return [dict(row) for row in cursor.fetchall()]

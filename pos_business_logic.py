@@ -358,8 +358,8 @@ class ReportService:
         # Filter by date and aggregate
         item_stats = {}
         for sale in all_sales:
-            # Handle None values - time or created_at might be None
-            sale_date = sale.get('time') or sale.get('created_at') or ''
+            # Use sale_date from joined query, fallback to time or created_at
+            sale_date = sale.get('sale_date') or sale.get('time') or sale.get('created_at') or ''
             if sale_date and sale_date[:10] >= start_date:
                 item_name = sale['item']
                 if item_name not in item_stats:
