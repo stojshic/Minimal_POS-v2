@@ -4949,6 +4949,62 @@ class ConfirmDialog(Screen):
         self.dismiss(False)
 
 
+class InfoDialog(Screen):
+    """Simple info dialog with just a Close button"""
+
+    CSS = """
+    InfoDialog {
+        align: center middle;
+    }
+
+    #info-dialog {
+        width: 50;
+        height: auto;
+        border: thick $primary;
+        background: $surface;
+        padding: 2;
+    }
+
+    #info-message {
+        padding: 2;
+        text-align: center;
+    }
+
+    #info-buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+        align: center middle;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("enter", "close", "Zatvori"),
+    ]
+
+    def __init__(self, message: str, title: str = "INFO"):
+        super().__init__()
+        self.message = message
+        self.title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="info-dialog"):
+            yield Label(f"ℹ️  {self.title}", classes="label")
+            yield Static(self.message, id="info-message")
+
+            with Horizontal(id="info-buttons"):
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close-btn":
+            self.action_close()
+
+    def action_close(self) -> None:
+        """Close dialog"""
+        self.dismiss(None)
+
+
 class CreateUserScreen(Screen):
     """Screen for creating new user"""
 
@@ -6611,7 +6667,7 @@ class POSApp(App):
             ]
 
             for item in items:
-                lines.append(f"{item['item_name']} x{item['quantity']} = {item['line_total']:.2f}")
+                lines.append(f"{item['item']} x{item['quantity']:.0f} = {item['total']:.2f}")
 
             lines.extend([
                 "-" * 30,
@@ -6619,11 +6675,8 @@ class POSApp(App):
                 f"Plaćanje: {sale['payment_type']}",
             ])
 
-            # Show in a simple dialog
-            self.push_screen(
-                ConfirmDialog("\n".join(lines), "POSLEDNJA PRODAJA"),
-                lambda x: None  # Dismiss handler does nothing
-            )
+            # Show in info dialog
+            self.push_screen(InfoDialog("\n".join(lines), "POSLEDNJA PRODAJA"))
 
         except Exception as e:
             self.notify(f"Greška: {str(e)}", severity="error")
