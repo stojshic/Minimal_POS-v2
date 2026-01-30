@@ -14,14 +14,56 @@ from pos_db_layer import (
     InvoiceRepository, UserRepository, RefundRepository,
     CustomerRepository, UnifiedSalesRepository,
     TableRepository, TableSessionRepository, TableOrderRepository,
-    CategoryRepository, SettingsRepository
+    CategoryRepository, SettingsRepository, StockAdjustmentRepository
 )
 from pos_business_logic import (
         POSService, ReportService, PaymentInfo, DailyReportService,
-        UserService, RefundService, TableService, CategoryService
+        UserService, RefundService, TableService, CategoryService,
+        StockAdjustmentService
 )
 from config import STORE_CONFIG, CONFIG
 from receipt_printer import OrderTicketPrinter
+import csv
+import os
+from datetime import datetime
+
+
+def export_to_csv(data: list, filename: str, headers: list = None) -> tuple:
+    """
+    Export data to CSV file.
+
+    Args:
+        data: List of dicts to export
+        filename: Output filename (will be placed in exports/ folder)
+        headers: Optional list of column headers (keys to include)
+
+    Returns:
+        (success: bool, filepath: str or error message)
+    """
+    try:
+        # Create exports directory if it doesn't exist
+        os.makedirs("exports", exist_ok=True)
+
+        # Add timestamp to filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = os.path.splitext(filename)[0]
+        filepath = f"exports/{base_name}_{timestamp}.csv"
+
+        if not data:
+            return False, "Nema podataka za izvoz"
+
+        # Get headers from first row if not specified
+        if not headers:
+            headers = list(data[0].keys())
+
+        with open(filepath, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=headers, extrasaction='ignore')
+            writer.writeheader()
+            writer.writerows(data)
+
+        return True, filepath
+    except Exception as e:
+        return False, str(e)
 
 
 USER = ""
@@ -329,7 +371,9 @@ class RestaurantScreen(Screen):
     def action_inventory(self) -> None:
         """Open inventory management (admin only)"""
         if self.app.require_admin("Inventar"):
-            self.app.push_screen(InventoryManagementScreen(self.app.pos, self.app.category_service))
+            self.app.push_screen(InventoryManagementScreen(
+                self.app.pos, self.app.category_service, self.app.adjustment_service
+            ))
 
     def action_refresh(self) -> None:
         """Refresh table display"""
@@ -2819,12 +2863,15 @@ class InventoryManagementScreen(Screen):
         Binding("e", "edit_item", "Edit Item"),
         Binding("delete", "delete_item", "Delete Item"),
         Binding("p", "change_price", "Change Price"),
+        Binding("a", "adjust_stock", "Korekcija stanja"),
+        Binding("h", "adjustment_history", "Istorija korekcija"),
     ]
 
-    def __init__(self, pos_service, category_service=None):
+    def __init__(self, pos_service, category_service=None, adjustment_service=None):
         super().__init__()
         self.pos_service = pos_service
         self.category_service = category_service
+        self.adjustment_service = adjustment_service
 
     def compose(self) -> ComposeResult:
         with Vertical(id="inventory-container"):
@@ -2836,9 +2883,11 @@ class InventoryManagementScreen(Screen):
             yield DataTable(id="inventory-table")
 
             with Horizontal(id="inventory-controls"):
-                yield Button("Novi artikal \\[N]", id="new-item-btn", variant="success")
+                yield Button("Novi \\[N]", id="new-item-btn", variant="success")
                 yield Button("Izmeni \\[E]", id="edit-item-btn", variant="primary")
-                yield Button("Promeni cenu \\[P]", id="price-btn", variant="warning")
+                yield Button("Cena \\[P]", id="price-btn", variant="warning")
+                yield Button("Korekcija \\[A]", id="adjust-btn", variant="warning")
+                yield Button("Istorija \\[H]", id="history-btn", variant="default")
                 yield Button("Obriši \\[Del]", id="delete-item-btn", variant="error")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
         yield Footer()
@@ -2895,6 +2944,10 @@ class InventoryManagementScreen(Screen):
             self.action_edit_item()
         elif event.button.id == "price-btn":
             self.action_change_price()
+        elif event.button.id == "adjust-btn":
+            self.action_adjust_stock()
+        elif event.button.id == "history-btn":
+            self.action_adjustment_history()
         elif event.button.id == "delete-item-btn":
             self.action_delete_item()
         elif event.button.id == "close-btn":
@@ -2962,6 +3015,38 @@ class InventoryManagementScreen(Screen):
             self.load_inventory()
         except Exception as e:
             self.notify(f"Greška: {str(e)}", severity="error")
+
+    def action_adjust_stock(self) -> None:
+        """A - Open stock adjustment screen for selected item"""
+        if not self.adjustment_service:
+            self.notify("Servis za korekciju nije dostupan", severity="error")
+            return
+
+        item = self.get_selected_item()
+        if item:
+            user_id = self.app.current_user['id'] if self.app.current_user else None
+            self.app.push_screen(
+                StockAdjustmentScreen(
+                    self.adjustment_service,
+                    self.pos_service.inventory,
+                    item,
+                    user_id
+                ),
+                lambda changed: self.load_inventory() if changed else None
+            )
+        else:
+            self.notify("Izaberite artikal!", severity="warning")
+
+    def action_adjustment_history(self) -> None:
+        """H - Show adjustment history"""
+        if not self.adjustment_service:
+            self.notify("Servis za korekciju nije dostupan", severity="error")
+            return
+
+        # Show history for selected item or all items
+        item = self.get_selected_item()
+        item_id = item['id'] if item else None
+        self.app.push_screen(StockAdjustmentHistoryScreen(self.adjustment_service, item_id))
 
     def action_close(self) -> None:
         """Close screen"""
@@ -3634,11 +3719,12 @@ class ReportsScreen(Screen):
         Binding("3", "low_stock", "Low Stock"),
     ]
 
-    def __init__(self, daily_reports, reports, is_admin: bool):
+    def __init__(self, daily_reports, reports, is_admin: bool, db=None):
         super().__init__()
         self.daily_reports = daily_reports
         self.reports = reports
         self.is_admin = is_admin
+        self.db = db
 
     def compose(self) -> ComposeResult:
         with Vertical(id="reports-dialog"):
@@ -3653,6 +3739,7 @@ class ReportsScreen(Screen):
                 yield Button("4. Nedeljni izveštaj", id="weekly-btn", variant="default", classes="menu-button")
                 yield Button("5. Mesečni izveštaj", id="monthly-btn", variant="default", classes="menu-button")
                 yield Button("6. Top artikli", id="top-btn", variant="default", classes="menu-button")
+                yield Button("7. Backup baze", id="backup-btn", variant="warning", classes="menu-button")
 
             yield Button("Zatvori \\[ESC]", id="close-btn", variant="error", classes="menu-button")
         yield Footer()
@@ -3670,6 +3757,8 @@ class ReportsScreen(Screen):
             self.action_monthly_report()
         elif event.button.id == "top-btn" and self.is_admin:
             self.show_top_items()
+        elif event.button.id == "backup-btn" and self.is_admin:
+            self.action_backup()
         elif event.button.id == "close-btn":
             self.action_close()
 
@@ -3696,7 +3785,19 @@ class ReportsScreen(Screen):
     def show_top_items(self) -> None:
         """Show top selling items"""
         self.app.push_screen(TopItemsScreen(self.reports))
-    
+
+    def action_backup(self) -> None:
+        """Create database backup"""
+        if not self.db:
+            self.notify("Database nije dostupna", severity="error")
+            return
+
+        success, result = self.db.backup()
+        if success:
+            self.notify(f"Backup kreiran: {result}", severity="information")
+        else:
+            self.notify(f"Greška: {result}", severity="error")
+
     def action_close(self) -> None:
         """Close reports"""
         self.dismiss()
@@ -4416,24 +4517,27 @@ class LowStockScreen(Screen):
     
     BINDINGS = [
         Binding("escape", "close", "Close"),
+        Binding("e", "export_csv", "Izvoz CSV"),
     ]
-    
+
     def __init__(self, reports):
         super().__init__()
         self.reports = reports
-    
+        self.low_stock_items = []  # Store for export
+
     def compose(self) -> ComposeResult:
         with Vertical(id="stock-container"):
             yield Label("🟡  NISKO STANJE ZALIHA", classes="label")
-            
+
             with Horizontal(id="input-row"):
                 yield Label("Minimalno stanje:")
                 yield Input(value="10", id="threshold-input", type="number")
                 yield Button("Prikaži", id="show-btn", variant="primary")
-            
+
             yield DataTable(id="stock-table")
-            
+
             with Horizontal(id="controls"):
+                yield Button("Izvoz CSV \\[E]", id="export-btn", variant="success")
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
     
     def on_mount(self) -> None:
@@ -4447,66 +4551,207 @@ class LowStockScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "show-btn":
             self.load_from_input()
+        elif event.button.id == "export-btn":
+            self.action_export_csv()
         elif event.button.id == "close-btn":
             self.action_close()
-    
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "threshold-input":
             self.load_from_input()
-    
+
     def load_from_input(self) -> None:
         """Load based on threshold input"""
         threshold_str = self.query_one("#threshold-input", Input).value.strip()
-        
+
         try:
             threshold = float(threshold_str)
             self.load_low_stock(threshold)
         except ValueError:
             self.notify("Unesite ispravan broj!", severity="error")
-    
+
     def load_low_stock(self, threshold: float) -> None:
         """Load items below threshold"""
-        low_stock = self.reports.low_stock_report(threshold)
-        
+        self.low_stock_items = self.reports.low_stock_report(threshold)
+
         table = self.query_one("#stock-table", DataTable)
         table.clear()
-        
-        if not low_stock:
+
+        if not self.low_stock_items:
             self.notify("✅ Svi artikli imaju dovoljno zaliha!", severity="success")
             return
-        
-        for item in low_stock:
+
+        for item in self.low_stock_items:
             table.add_row(
                 str(item['id']),
                 item['item'],
                 f"{item['quantity']:.2f}",
                 item.get('barcode') or ""
             )
-        
-        self.notify(f"🟡  {len(low_stock)} artikala sa niskim stanjem", severity="warning")
-    
+
+        self.notify(f"🟡  {len(self.low_stock_items)} artikala sa niskim stanjem", severity="warning")
+
+    def action_export_csv(self) -> None:
+        """Export low stock items to CSV"""
+        if not self.low_stock_items:
+            self.notify("Nema podataka za izvoz", severity="warning")
+            return
+
+        success, result = export_to_csv(
+            self.low_stock_items,
+            "nisko_stanje_zaliha.csv",
+            ['id', 'item', 'barcode', 'price', 'quantity']
+        )
+
+        if success:
+            self.notify(f"Izvezeno: {result}", severity="information")
+        else:
+            self.notify(f"Greška: {result}", severity="error")
+
     def action_close(self) -> None:
         self.dismiss()
 
 
-class TopItemsScreen(Screen):
-    """Top selling items report"""
-    
+class StockAdjustmentScreen(Screen):
+    """Screen for adjusting stock quantities with reason codes"""
+
     CSS = """
-    TopItemsScreen {
+    StockAdjustmentScreen {
+        align: center middle;
+    }
+
+    #adjustment-dialog {
+        width: 70;
+        height: auto;
+        max-height: 90%;
+        border: thick $warning;
+        background: $surface;
+        padding: 2;
+    }
+
+    .input-row {
+        layout: horizontal;
+        height: auto;
+        margin: 1 0;
+    }
+
+    .input-label {
+        width: 20;
+        padding: 1 0;
+    }
+
+    Input, Select {
+        width: 1fr;
+    }
+
+    #buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 2;
+        align: center middle;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+    ]
+
+    def __init__(self, adjustment_service, inventory_service, item: dict, user_id: int = None):
+        super().__init__()
+        self.adjustment_service = adjustment_service
+        self.inventory_service = inventory_service
+        self.item = item
+        self.user_id = user_id
+        self.reason_codes = adjustment_service.get_reason_codes()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="adjustment-dialog"):
+            yield Label(f"KOREKCIJA STANJA: {self.item['item']}", classes="label")
+
+            with Horizontal(classes="input-row"):
+                yield Label("Trenutno stanje:", classes="input-label")
+                yield Static(f"{self.item['quantity']:.2f}", id="current-qty")
+
+            with Horizontal(classes="input-row"):
+                yield Label("Novo stanje:", classes="input-label")
+                yield Input(
+                    value=str(self.item['quantity']),
+                    id="new-qty",
+                    type="number"
+                )
+
+            with Horizontal(classes="input-row"):
+                yield Label("Razlog:", classes="input-label")
+                reason_options = [(v, k) for k, v in self.reason_codes.items()]
+                yield Select(reason_options, id="reason-select", value="count")
+
+            with Horizontal(classes="input-row"):
+                yield Label("Napomena:", classes="input-label")
+                yield Input(placeholder="Opciono...", id="notes-input")
+
+            with Horizontal(id="buttons"):
+                yield Button("Sačuvaj", id="save-btn", variant="success")
+                yield Button("Otkaži \\[ESC]", id="cancel-btn", variant="error")
+
+    def on_mount(self) -> None:
+        self.query_one("#new-qty", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save-btn":
+            self.save_adjustment()
+        elif event.button.id == "cancel-btn":
+            self.action_close()
+
+    def save_adjustment(self) -> None:
+        """Save the stock adjustment"""
+        try:
+            new_qty = float(self.query_one("#new-qty", Input).value)
+            reason_code = self.query_one("#reason-select", Select).value
+            notes = self.query_one("#notes-input", Input).value
+
+            if new_qty < 0:
+                self.notify("Količina ne može biti negativna", severity="error")
+                return
+
+            success, message = self.adjustment_service.adjust_stock(
+                item_id=self.item['id'],
+                new_quantity=new_qty,
+                reason_code=reason_code,
+                notes=notes,
+                user_id=self.user_id
+            )
+
+            if success:
+                self.notify(message, severity="information")
+                self.dismiss(True)  # Signal that change was made
+            else:
+                self.notify(message, severity="warning")
+
+        except ValueError:
+            self.notify("Unesite validnu količinu", severity="error")
+
+    def action_close(self) -> None:
+        self.dismiss(False)
+
+
+class StockAdjustmentHistoryScreen(Screen):
+    """Screen showing history of stock adjustments"""
+
+    CSS = """
+    StockAdjustmentHistoryScreen {
         background: $surface;
     }
-    
-    #top-container {
+
+    #history-container {
         height: 100%;
         padding: 1;
     }
-    
-    #top-table {
+
+    #history-table {
         height: 1fr;
-        border: solid $success;
+        border: solid $accent;
     }
-    
+
     #controls {
         dock: bottom;
         height: auto;
@@ -4515,60 +4760,151 @@ class TopItemsScreen(Screen):
         background: $panel;
     }
     """
-    
+
     BINDINGS = [
-        Binding("escape", "close", "Close"),
+        Binding("escape", "close", "Zatvori"),
     ]
-    
-    def __init__(self, reports):
+
+    def __init__(self, adjustment_service, item_id: int = None):
         super().__init__()
-        self.reports = reports
-    
+        self.adjustment_service = adjustment_service
+        self.item_id = item_id
+
     def compose(self) -> ComposeResult:
-        with Vertical(id="top-container"):
-            yield Label("🏆 TOP PRODAVANI ARTIKLI", classes="label")
-            
-            yield DataTable(id="top-table")
-            
+        title = "ISTORIJA KOREKCIJA STANJA"
+        with Vertical(id="history-container"):
+            yield Label(title, classes="label")
+            yield DataTable(id="history-table", zebra_stripes=True)
+
             with Horizontal(id="controls"):
                 yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
-    
+
     def on_mount(self) -> None:
-        """Setup and load top items"""
-        table = self.query_one("#top-table", DataTable)
-        table.add_columns("Rank", "Artikal", "Prodato", "Prihod (RSD)")
-        
-        # Get sales summary and extract top items
-        summary = self.reports.sales_summary(1000)  # Get more sales for better data
-        
-        # Aggregate by item
-        from collections import defaultdict
-        item_stats = defaultdict(lambda: {'quantity': 0, 'revenue': 0})
-        
-        for sale in summary['sales']:
-            item_name = sale['item']
-            item_stats[item_name]['quantity'] += sale['quantity']
-            item_stats[item_name]['revenue'] += sale['total']
-        
-        # Sort by revenue
-        top_items = sorted(
-            item_stats.items(),
-            key=lambda x: x[1]['revenue'],
-            reverse=True
-        )[:20]  # Top 20
-        
-        for i, (item_name, stats) in enumerate(top_items, 1):
+        table = self.query_one("#history-table", DataTable)
+        table.add_columns("Datum", "Artikal", "Promena", "Razlog", "Korisnik", "Napomena")
+
+        adjustments = self.adjustment_service.get_adjustment_history(
+            item_id=self.item_id,
+            limit=100
+        )
+
+        reason_codes = self.adjustment_service.get_reason_codes()
+
+        for adj in adjustments:
+            change = adj['quantity_change']
+            change_str = f"+{change:.2f}" if change > 0 else f"{change:.2f}"
+            reason_label = reason_codes.get(adj['reason_code'], adj['reason_code'])
+
             table.add_row(
-                str(i),
-                item_name,
-                f"{stats['quantity']:.0f}",
-                f"{stats['revenue']:.2f}"
+                adj['created_at'][:16],
+                adj['item_name'][:20],
+                f"{adj['quantity_before']:.0f} → {adj['quantity_after']:.0f} ({change_str})",
+                reason_label,
+                adj.get('adjusted_by_name', '-') or '-',
+                (adj.get('notes') or '-')[:20]
             )
-    
+
+        if not adjustments:
+            self.notify("Nema korekcija za prikaz", severity="warning")
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-btn":
             self.action_close()
-    
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+
+class TopItemsScreen(Screen):
+    """Top selling items report"""
+
+    CSS = """
+    TopItemsScreen {
+        background: $surface;
+    }
+
+    #top-container {
+        height: 100%;
+        padding: 1;
+    }
+
+    #top-table {
+        height: 1fr;
+        border: solid $success;
+    }
+
+    #controls {
+        dock: bottom;
+        height: auto;
+        layout: horizontal;
+        padding: 1;
+        background: $panel;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("e", "export_csv", "Izvoz CSV"),
+    ]
+
+    def __init__(self, reports):
+        super().__init__()
+        self.reports = reports
+        self.top_items = []  # Store for export
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="top-container"):
+            yield Label("🏆 TOP PRODAVANI ARTIKLI (poslednjih 30 dana)", classes="label")
+
+            yield DataTable(id="top-table")
+
+            with Horizontal(id="controls"):
+                yield Button("Izvoz CSV \\[E]", id="export-btn", variant="success")
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="default")
+
+    def on_mount(self) -> None:
+        """Setup and load top items"""
+        table = self.query_one("#top-table", DataTable)
+        table.add_columns("Rank", "Artikal", "Prodato kom.", "Transakcija", "Prihod (RSD)")
+
+        # Use the new top_sellers_report method
+        self.top_items = self.reports.top_sellers_report(days=30, limit=20)
+
+        for i, item in enumerate(self.top_items, 1):
+            table.add_row(
+                str(i),
+                item['item'],
+                f"{item['quantity_sold']:.0f}",
+                str(item['transactions']),
+                f"{item['revenue']:.2f}"
+            )
+
+        if not self.top_items:
+            self.notify("Nema podataka o prodaji", severity="warning")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close-btn":
+            self.action_close()
+        elif event.button.id == "export-btn":
+            self.action_export_csv()
+
+    def action_export_csv(self) -> None:
+        """Export top items to CSV"""
+        if not self.top_items:
+            self.notify("Nema podataka za izvoz", severity="warning")
+            return
+
+        success, result = export_to_csv(
+            self.top_items,
+            "top_prodavani_artikli.csv",
+            ['item', 'quantity_sold', 'transactions', 'revenue']
+        )
+
+        if success:
+            self.notify(f"Izvezeno: {result}", severity="information")
+        else:
+            self.notify(f"Greška: {result}", severity="error")
+
     def action_close(self) -> None:
         self.dismiss()
 
@@ -6069,6 +6405,7 @@ class POSApp(App):
 
         # Initialize backend
         db = Database("data.db")
+        self.db = db  # Store for backup functionality
         inv_repo = InventoryRepository(db)
         sales_repo = SalesRepository(db)
         user_repo = UserRepository(db)
@@ -6113,6 +6450,10 @@ class POSApp(App):
 
         # Category service
         self.category_service = CategoryService(category_repo, inv_repo)
+
+        # Stock adjustment service
+        adjustment_repo = StockAdjustmentRepository(db)
+        self.adjustment_service = StockAdjustmentService(inv_repo, adjustment_repo)
 
         # Current logged in user
         self.current_user = None
@@ -6903,7 +7244,7 @@ class POSApp(App):
         if not self.require_admin("Upravljanje inventarom"):
             return
 
-        screen = InventoryManagementScreen(self.pos, self.category_service)
+        screen = InventoryManagementScreen(self.pos, self.category_service, self.adjustment_service)
         if self.is_shop_mode:
             self.open_main_screen(screen)
         else:
@@ -6915,7 +7256,8 @@ class POSApp(App):
         screen = ReportsScreen(
             self.daily_reports,
             self.reports,
-            self.is_admin()
+            self.is_admin(),
+            self.db  # Pass db for backup functionality
         )
         if self.is_shop_mode:
             self.open_main_screen(screen)

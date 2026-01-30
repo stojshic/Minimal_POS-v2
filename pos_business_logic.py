@@ -330,13 +330,55 @@ class ReportService:
         recent_sales = self.sales.get_recent_sales(limit)
         total_revenue = sum(sale['total'] for sale in recent_sales)
         total_items_sold = sum(sale['quantity'] for sale in recent_sales)
-        
+
         return {
             "total_sales": len(recent_sales),
             "total_revenue": total_revenue,
             "total_items_sold": total_items_sold,
             "sales": recent_sales
         }
+
+    def top_sellers_report(self, days: int = 30, limit: int = 20) -> List[dict]:
+        """
+        Get top selling items by quantity and revenue.
+
+        Args:
+            days: Number of days to look back
+            limit: Maximum items to return
+
+        Returns:
+            List of dicts with item stats sorted by revenue
+        """
+        from datetime import datetime, timedelta
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        # Get all sales from the period
+        all_sales = self.sales.get_recent_sales(10000)  # Get lots of sales
+
+        # Filter by date and aggregate
+        item_stats = {}
+        for sale in all_sales:
+            sale_date = sale.get('time', sale.get('created_at', ''))[:10]
+            if sale_date >= start_date:
+                item_name = sale['item']
+                if item_name not in item_stats:
+                    item_stats[item_name] = {
+                        'item': item_name,
+                        'quantity_sold': 0,
+                        'revenue': 0,
+                        'transactions': 0
+                    }
+                item_stats[item_name]['quantity_sold'] += sale['quantity']
+                item_stats[item_name]['revenue'] += sale['total']
+                item_stats[item_name]['transactions'] += 1
+
+        # Sort by revenue and return top N
+        sorted_items = sorted(
+            item_stats.values(),
+            key=lambda x: x['revenue'],
+            reverse=True
+        )
+        return sorted_items[:limit]
 
 
 class DailyReportService:
@@ -954,8 +996,87 @@ class RefundService:
         
         # Return items to inventory
         self.inventory.update_quantity(item['id'], quantity)
-        
+
         return True, f"Povraćaj: {quantity}x {item_name} = {refund_amount:.2f} RSD"
+
+
+class StockAdjustmentService:
+    """Service for stock adjustments with audit trail"""
+
+    def __init__(self, inventory_repo, adjustment_repo):
+        self.inventory = inventory_repo
+        self.adjustments = adjustment_repo
+
+    def adjust_stock(
+        self,
+        item_id: int,
+        new_quantity: float,
+        reason_code: str,
+        notes: str = "",
+        user_id: Optional[int] = None
+    ) -> Tuple[bool, str]:
+        """
+        Adjust stock to a specific quantity.
+
+        Args:
+            item_id: Inventory item ID
+            new_quantity: New absolute quantity to set
+            reason_code: Reason code for adjustment
+            notes: Optional notes
+            user_id: User making the adjustment
+
+        Returns:
+            (success, message)
+        """
+        # Get current item
+        item = self.inventory.get_by_id(item_id)
+        if not item:
+            return False, "Artikal nije pronađen"
+
+        old_quantity = item['quantity']
+        quantity_change = new_quantity - old_quantity
+
+        if quantity_change == 0:
+            return False, "Količina je ista, nema promene"
+
+        adjustment_type = "increase" if quantity_change > 0 else "decrease"
+
+        # Update inventory
+        # We need to set the absolute quantity, not add to it
+        with self.inventory.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE inventory
+                   SET quantity = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?""",
+                (new_quantity, item_id)
+            )
+
+        # Record adjustment
+        self.adjustments.record_adjustment(
+            item_id=item_id,
+            item_name=item['item'],
+            adjustment_type=adjustment_type,
+            quantity_before=old_quantity,
+            quantity_change=quantity_change,
+            quantity_after=new_quantity,
+            reason_code=reason_code,
+            notes=notes,
+            adjusted_by=user_id
+        )
+
+        reason_label = self.adjustments.REASON_CODES.get(reason_code, reason_code)
+        return True, f"Korekcija: {item['item']} {old_quantity} → {new_quantity} ({reason_label})"
+
+    def get_adjustment_history(self, item_id: int = None, limit: int = 100) -> List[dict]:
+        """Get adjustment history, optionally filtered by item"""
+        if item_id:
+            return self.adjustments.get_adjustments_by_item(item_id, limit)
+        return self.adjustments.get_recent_adjustments(limit)
+
+    def get_reason_codes(self) -> dict:
+        """Get available reason codes with labels"""
+        return self.adjustments.REASON_CODES
 
 
 class TableService:

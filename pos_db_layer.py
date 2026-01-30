@@ -3,18 +3,20 @@ Database layer for POS system
 Handles all database operations with clean interfaces
 """
 import sqlite3
+import shutil
+import os
 from contextlib import contextmanager
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 
 class Database:
     """Main database handler with context manager support"""
-    
+
     def __init__(self, db_path: str = "data.db"):
         self.db_path = db_path
         self.initialize_tables()
-    
+
     @contextmanager
     def get_connection(self):
         """Context manager for database connections"""
@@ -28,7 +30,86 @@ class Database:
             raise e
         finally:
             conn.close()
-    
+
+    def backup(self, backup_dir: str = "backups") -> Tuple[bool, str]:
+        """
+        Create a backup of the database.
+
+        Args:
+            backup_dir: Directory to store backups
+
+        Returns:
+            (success, filepath or error message)
+        """
+        try:
+            # Create backup directory if it doesn't exist
+            os.makedirs(backup_dir, exist_ok=True)
+
+            # Generate backup filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_filename = f"data_backup_{timestamp}.db"
+            backup_path = os.path.join(backup_dir, backup_filename)
+
+            # Use SQLite's backup API for safe backup
+            with sqlite3.connect(self.db_path) as source:
+                with sqlite3.connect(backup_path) as dest:
+                    source.backup(dest)
+
+            # Verify backup was created
+            if os.path.exists(backup_path):
+                size_kb = os.path.getsize(backup_path) / 1024
+                return True, f"{backup_path} ({size_kb:.1f} KB)"
+
+            return False, "Backup file was not created"
+
+        except Exception as e:
+            return False, str(e)
+
+    def get_backup_list(self, backup_dir: str = "backups") -> List[Dict[str, Any]]:
+        """Get list of existing backups"""
+        backups = []
+        if os.path.exists(backup_dir):
+            for filename in os.listdir(backup_dir):
+                if filename.endswith('.db') and filename.startswith('data_backup_'):
+                    filepath = os.path.join(backup_dir, filename)
+                    stat = os.stat(filepath)
+                    backups.append({
+                        'filename': filename,
+                        'path': filepath,
+                        'size_kb': stat.st_size / 1024,
+                        'created_at': datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                    })
+        # Sort by newest first
+        backups.sort(key=lambda x: x['created_at'], reverse=True)
+        return backups
+
+    def restore_from_backup(self, backup_path: str) -> Tuple[bool, str]:
+        """
+        Restore database from a backup file.
+
+        WARNING: This will overwrite the current database!
+
+        Args:
+            backup_path: Path to the backup file
+
+        Returns:
+            (success, message)
+        """
+        try:
+            if not os.path.exists(backup_path):
+                return False, "Backup file not found"
+
+            # First create a backup of current state
+            self.backup()
+
+            # Copy backup over current database
+            shutil.copy2(backup_path, self.db_path)
+
+            return True, "Database restored successfully"
+
+        except Exception as e:
+            return False, str(e)
+
     def initialize_tables(self):
         """Create all necessary tables"""
         with self.get_connection() as conn:
@@ -431,6 +512,27 @@ class Database:
                 ON login_attempts(username, attempt_time)
             """)
 
+            # ============================================================
+            # Stock adjustments table (for inventory corrections with audit trail)
+            # ============================================================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS stock_adjustments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL,
+                    item_name TEXT NOT NULL,
+                    adjustment_type TEXT NOT NULL,
+                    quantity_before REAL NOT NULL,
+                    quantity_change REAL NOT NULL,
+                    quantity_after REAL NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    notes TEXT,
+                    adjusted_by INTEGER,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (item_id) REFERENCES inventory(id),
+                    FOREIGN KEY (adjusted_by) REFERENCES users(id)
+                )
+            """)
+
 
 class SettingsRepository:
     """Repository for system settings (key-value store)"""
@@ -477,6 +579,94 @@ class SettingsRepository:
             cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
             row = cursor.fetchone()
             return int(row['value']) if row else 0
+
+
+class StockAdjustmentRepository:
+    """Repository for stock adjustment operations"""
+
+    # Standard reason codes for stock adjustments
+    REASON_CODES = {
+        'count': 'Inventura',
+        'damage': 'Oštećenje',
+        'theft': 'Krađa',
+        'expired': 'Istekao rok',
+        'return_supplier': 'Povraćaj dobavljaču',
+        'correction': 'Korekcija greške',
+        'sample': 'Uzorak/Degustacija',
+        'internal_use': 'Interna upotreba',
+        'other': 'Ostalo',
+    }
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def record_adjustment(
+        self,
+        item_id: int,
+        item_name: str,
+        adjustment_type: str,
+        quantity_before: float,
+        quantity_change: float,
+        quantity_after: float,
+        reason_code: str,
+        notes: str = "",
+        adjusted_by: Optional[int] = None
+    ) -> int:
+        """Record a stock adjustment"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO stock_adjustments
+                   (item_id, item_name, adjustment_type, quantity_before,
+                    quantity_change, quantity_after, reason_code, notes, adjusted_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (item_id, item_name, adjustment_type, quantity_before,
+                 quantity_change, quantity_after, reason_code, notes, adjusted_by)
+            )
+            return cursor.lastrowid
+
+    def get_adjustments_by_date(self, date: str) -> List[Dict[str, Any]]:
+        """Get all adjustments for a specific date"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT sa.*, u.full_name as adjusted_by_name
+                   FROM stock_adjustments sa
+                   LEFT JOIN users u ON sa.adjusted_by = u.id
+                   WHERE DATE(sa.created_at) = ?
+                   ORDER BY sa.created_at DESC""",
+                (date,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_adjustments_by_item(self, item_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get adjustment history for a specific item"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT sa.*, u.full_name as adjusted_by_name
+                   FROM stock_adjustments sa
+                   LEFT JOIN users u ON sa.adjusted_by = u.id
+                   WHERE sa.item_id = ?
+                   ORDER BY sa.created_at DESC
+                   LIMIT ?""",
+                (item_id, limit)
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent_adjustments(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get recent adjustments across all items"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT sa.*, u.full_name as adjusted_by_name
+                   FROM stock_adjustments sa
+                   LEFT JOIN users u ON sa.adjusted_by = u.id
+                   ORDER BY sa.created_at DESC
+                   LIMIT ?""",
+                (limit,)
+            )
+            return [dict(row) for row in cursor.fetchall()]
 
 
 class InventoryRepository:
