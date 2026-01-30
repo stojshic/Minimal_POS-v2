@@ -10,9 +10,14 @@ from io import BytesIO
 class FiscalReceipt:
     """Generates Serbian fiscal receipts"""
 
-    def __init__(self, store_config: dict):
+    def __init__(self, store_config: dict, settings_repo=None):
         self.config = store_config
-        self.receipt_counter = 1 # Should be stored in DB in production
+        self.settings_repo = settings_repo
+        # Load receipt counter from DB if available, otherwise use 1
+        if settings_repo:
+            self.receipt_counter = settings_repo.get_int('receipt_counter', 1)
+        else:
+            self.receipt_counter = 1  # Fallback for standalone use
 
     def generate_qr_ascii(self, data: str) -> str:
         """Generate ASCII art QR code for terminal display"""
@@ -170,7 +175,10 @@ class FiscalReceipt:
         qr_ascii = self.generate_qr_ascii(qr_data)
         receipt.append(qr_ascii)
 
+        # Increment counter and persist to DB
         self.receipt_counter += 1
+        if self.settings_repo:
+            self.settings_repo.set('receipt_counter', str(self.receipt_counter))
 
         return "\n".join(receipt)
 

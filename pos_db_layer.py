@@ -52,9 +52,9 @@ class Database:
             # Add default admin user if table is empty
             cursor.execute("SELECT COUNT(*) FROM users")
             if cursor.fetchone()[0] == 0:
-                import hashlib
+                import bcrypt
                 # Default admin password: "admin123" (should be changed after first login!)
-                default_password = hashlib.sha256("admin123".encode()).hexdigest()
+                default_password = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
                 cursor.execute("""
                     INSERT INTO users (username, password_hash, full_name, role)
                     VALUES (?, ?, ?, ?)
@@ -393,6 +393,91 @@ class Database:
                     "INSERT INTO restaurant_tables (name, position_row, position_col, capacity) VALUES (?, ?, ?, ?)",
                     default_tables
                 )
+
+            # ============================================================
+            # System settings table (key-value store)
+            # ============================================================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Initialize default settings if they don't exist
+            cursor.execute("SELECT COUNT(*) FROM settings WHERE key = 'receipt_counter'")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "INSERT INTO settings (key, value) VALUES ('receipt_counter', '1')"
+                )
+
+            # ============================================================
+            # Login attempts tracking table (for brute-force protection)
+            # ============================================================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS login_attempts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL,
+                    attempt_time TEXT DEFAULT CURRENT_TIMESTAMP,
+                    success INTEGER DEFAULT 0,
+                    ip_address TEXT
+                )
+            """)
+
+            # Add index for faster username lookups
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_login_attempts_username
+                ON login_attempts(username, attempt_time)
+            """)
+
+
+class SettingsRepository:
+    """Repository for system settings (key-value store)"""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def get(self, key: str, default: str = None) -> Optional[str]:
+        """Get a setting value by key"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row['value'] if row else default
+
+    def get_int(self, key: str, default: int = 0) -> int:
+        """Get a setting value as integer"""
+        value = self.get(key)
+        return int(value) if value is not None else default
+
+    def set(self, key: str, value: str) -> bool:
+        """Set a setting value (insert or update)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT INTO settings (key, value, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP""",
+                (key, value, value)
+            )
+            return cursor.rowcount > 0
+
+    def increment(self, key: str) -> int:
+        """Increment a numeric setting and return the new value"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE settings
+                   SET value = CAST(value AS INTEGER) + 1,
+                       updated_at = CURRENT_TIMESTAMP
+                   WHERE key = ?""",
+                (key,)
+            )
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return int(row['value']) if row else 0
+
 
 class InventoryRepository:
     """Repository pattern for inventory operations"""
@@ -1151,34 +1236,83 @@ class UserRepository:
     def __init__(self, db: Database):
         self.db = db
 
-    def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
+    def authenticate(self, username: str, password: str,
+                     max_attempts: int = 5, lockout_minutes: int = 15) -> tuple:
         """
-        Verify username and password
+        Verify username and password with brute-force protection.
+
+        Supports both legacy SHA-256 and new bcrypt password hashes.
+        Legacy passwords are automatically upgraded to bcrypt on successful login.
+
+        Args:
+            username: The username to authenticate
+            password: The password to verify
+            max_attempts: Maximum failed attempts before lockout
+            lockout_minutes: Duration of lockout in minutes
 
         Returns:
-            User dict if valid, None if invalid
+            Tuple of (user_dict or None, error_message or None)
+            - (user, None) on success
+            - (None, "locked:X") if locked out (X = remaining minutes)
+            - (None, "invalid") if credentials invalid
         """
         import hashlib
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        import bcrypt
+
+        # Check for lockout first
+        is_locked, remaining = self.is_locked_out(username, max_attempts, lockout_minutes)
+        if is_locked:
+            return (None, f"locked:{remaining}")
 
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
+            # First, get user by username only
             cursor.execute(
-                """SELECT * FROM users
-                   WHERE username = ? AND password_hash = ? AND is_active = 1""",
-                (username, password_hash)
+                "SELECT * FROM users WHERE username = ? AND is_active = 1",
+                (username,)
             )
             row = cursor.fetchone()
 
-            if row:
-                user = dict(row)
-                # Update last login
-                cursor.execute(
-                    "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
-                    (user['id'],)
-                )
-                return user
-            return None
+            if not row:
+                # Record failed attempt even for non-existent users (prevent enumeration)
+                self.record_login_attempt(username, False)
+                return (None, "invalid")
+
+            user = dict(row)
+            stored_hash = user['password_hash']
+            authenticated = False
+
+            # Check if it's a bcrypt hash (starts with $2b$ or $2a$ or $2y$)
+            if stored_hash.startswith('$2'):
+                # Modern bcrypt verification
+                if bcrypt.checkpw(password.encode(), stored_hash.encode()):
+                    authenticated = True
+                    # Update last login
+                    cursor.execute(
+                        "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
+                        (user['id'],)
+                    )
+            else:
+                # Legacy SHA-256 verification
+                legacy_hash = hashlib.sha256(password.encode()).hexdigest()
+                if stored_hash == legacy_hash:
+                    authenticated = True
+                    # Migrate to bcrypt on successful login
+                    new_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, last_login = CURRENT_TIMESTAMP WHERE id = ?",
+                        (new_hash, user['id'])
+                    )
+
+            if authenticated:
+                # Clear failed attempts on success
+                self.clear_failed_attempts(username)
+                self.record_login_attempt(username, True)
+                return (user, None)
+            else:
+                # Record failed attempt
+                self.record_login_attempt(username, False)
+                return (None, "invalid")
 
     def get_all_users(self) -> List[Dict[str, Any]]:
         """Get all users (for admin)"""
@@ -1188,9 +1322,9 @@ class UserRepository:
             return [dict(row) for row in cursor.fetchall()]
 
     def create_user(self, username: str, password: str, full_name: str, role: str) -> int:
-        """Create new user"""
-        import hashlib
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        """Create new user with bcrypt password hashing"""
+        import bcrypt
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -1202,9 +1336,9 @@ class UserRepository:
             return cursor.lastrowid
 
     def update_password(self, user_id: int, new_password: str) -> bool:
-        """Change user password"""
-        import hashlib
-        password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+        """Change user password using bcrypt"""
+        import bcrypt
+        password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
 
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
@@ -1240,6 +1374,65 @@ class UserRepository:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
             return cursor.rowcount > 0
+
+    def record_login_attempt(self, username: str, success: bool) -> None:
+        """Record a login attempt (successful or failed)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO login_attempts (username, success) VALUES (?, ?)",
+                (username, 1 if success else 0)
+            )
+
+    def get_failed_attempts_count(self, username: str, minutes: int = 15) -> int:
+        """Get count of failed login attempts in the last N minutes"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT COUNT(*) FROM login_attempts
+                   WHERE username = ? AND success = 0
+                   AND attempt_time > datetime('now', ? || ' minutes')""",
+                (username, -minutes)
+            )
+            return cursor.fetchone()[0]
+
+    def clear_failed_attempts(self, username: str) -> None:
+        """Clear failed login attempts for a user (call on successful login)"""
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM login_attempts WHERE username = ? AND success = 0",
+                (username,)
+            )
+
+    def is_locked_out(self, username: str, max_attempts: int = 5, lockout_minutes: int = 15) -> tuple:
+        """
+        Check if user is locked out due to too many failed attempts.
+
+        Returns:
+            (is_locked: bool, remaining_minutes: int)
+        """
+        failed_count = self.get_failed_attempts_count(username, lockout_minutes)
+        if failed_count >= max_attempts:
+            # Get time of first failed attempt in the window to calculate remaining lockout
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """SELECT MIN(attempt_time) FROM login_attempts
+                       WHERE username = ? AND success = 0
+                       AND attempt_time > datetime('now', ? || ' minutes')""",
+                    (username, -lockout_minutes)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    from datetime import datetime
+                    first_attempt = datetime.fromisoformat(row[0])
+                    now = datetime.now()
+                    elapsed = (now - first_attempt).total_seconds() / 60
+                    remaining = int(lockout_minutes - elapsed) + 1
+                    return (True, max(1, remaining))
+            return (True, lockout_minutes)
+        return (False, 0)
 
 
 class RefundRepository:

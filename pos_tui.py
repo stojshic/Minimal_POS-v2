@@ -14,7 +14,7 @@ from pos_db_layer import (
     InvoiceRepository, UserRepository, RefundRepository,
     CustomerRepository, UnifiedSalesRepository,
     TableRepository, TableSessionRepository, TableOrderRepository,
-    CategoryRepository
+    CategoryRepository, SettingsRepository
 )
 from pos_business_logic import (
         POSService, ReportService, PaymentInfo, DailyReportService,
@@ -5005,6 +5005,140 @@ class InfoDialog(Screen):
         self.dismiss(None)
 
 
+class HelpScreen(Screen):
+    """Keyboard shortcuts help screen"""
+
+    CSS = """
+    HelpScreen {
+        align: center middle;
+    }
+
+    #help-dialog {
+        width: 80;
+        height: auto;
+        max-height: 90%;
+        border: thick $primary;
+        background: $surface;
+        padding: 2;
+    }
+
+    #help-title {
+        text-style: bold;
+        color: $accent;
+        text-align: center;
+        padding-bottom: 1;
+    }
+
+    .help-section {
+        padding: 1 0;
+    }
+
+    .help-section-title {
+        text-style: bold;
+        color: $success;
+    }
+
+    .help-content {
+        padding-left: 2;
+    }
+
+    #help-buttons {
+        layout: horizontal;
+        height: auto;
+        margin-top: 1;
+        align: center middle;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Zatvori"),
+        Binding("f1", "close", "Zatvori"),
+    ]
+
+    def __init__(self, is_shop_mode: bool = True):
+        super().__init__()
+        self.is_shop_mode = is_shop_mode
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Label("PREČICE NA TASTATURI", id="help-title")
+
+            # Common shortcuts
+            with Vertical(classes="help-section"):
+                yield Label("Opšte prečice:", classes="help-section-title")
+                yield Static(
+                    "  F1  - Pomoć (ovaj ekran)\n"
+                    "  F9  - Odjava\n"
+                    "  Q   - Izlaz iz aplikacije\n"
+                    "  ESC - Zatvaranje dijaloga / Nazad",
+                    classes="help-content"
+                )
+
+            if self.is_shop_mode:
+                # Shop mode shortcuts
+                with Vertical(classes="help-section"):
+                    yield Label("Prodaja (Shop Mode):", classes="help-section-title")
+                    yield Static(
+                        "  F2  - Ekran prodaje\n"
+                        "  F3  - Upravljanje inventarom\n"
+                        "  F4  - Izveštaji\n"
+                        "  F5  - Naplata (checkout)\n"
+                        "  F6  - Otpremnice\n"
+                        "  F7  - Prethodni računi\n"
+                        "  F8  - Upravljanje korisnicima (admin)\n"
+                        "  F10 - Upravljanje kupcima",
+                        classes="help-content"
+                    )
+
+                with Vertical(classes="help-section"):
+                    yield Label("Korpa:", classes="help-section-title")
+                    yield Static(
+                        "  Enter - Dodaj izabrani artikal u korpu\n"
+                        "  -     - Ukloni artikal iz korpe\n"
+                        "  E     - Izmeni količinu artikla\n"
+                        "  C     - Očisti korpu\n"
+                        "  L     - Prikaži poslednju prodaju\n"
+                        "  D     - Ponovi poslednju prodaju",
+                        classes="help-content"
+                    )
+            else:
+                # Restaurant mode shortcuts
+                with Vertical(classes="help-section"):
+                    yield Label("Restoran Mode:", classes="help-section-title")
+                    yield Static(
+                        "  F3  - Upravljanje inventarom\n"
+                        "  F4  - Izveštaji\n"
+                        "  F7  - Prethodni računi\n"
+                        "  F8  - Upravljanje korisnicima (admin)\n"
+                        "  F10 - Upravljanje kupcima\n"
+                        "  F11 - Upravljanje kategorijama (admin)\n"
+                        "  N   - Novi sto\n"
+                        "  R   - Osveži prikaz stolova",
+                        classes="help-content"
+                    )
+
+                with Vertical(classes="help-section"):
+                    yield Label("Narudžbina za sto:", classes="help-section-title")
+                    yield Static(
+                        "  Enter - Dodaj artikal\n"
+                        "  -     - Ukloni artikal\n"
+                        "  P     - Štampaj porudžbenicu\n"
+                        "  F5    - Naplata stola",
+                        classes="help-content"
+                    )
+
+            with Horizontal(id="help-buttons"):
+                yield Button("Zatvori \\[ESC]", id="close-btn", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close-btn":
+            self.action_close()
+
+    def action_close(self) -> None:
+        """Close help screen"""
+        self.dismiss(None)
+
+
 class CreateUserScreen(Screen):
     """Screen for creating new user"""
 
@@ -5951,13 +6085,18 @@ class POSApp(App):
         # Category repository
         category_repo = CategoryRepository(db)
 
+        # Settings repository (for persistent counters, etc.)
+        settings_repo = SettingsRepository(db)
+
         self.pos = POSService(
             inv_repo,
             sales_repo,
             invoice_repo,
             customer_repo,
-            unified_sales_repo
+            unified_sales_repo,
+            settings_repo=settings_repo
         )
+        self.settings = settings_repo  # Store for direct access
 
         self.reports = ReportService(inv_repo, sales_repo)
         self.daily_reports = DailyReportService(
@@ -5990,6 +6129,11 @@ class POSApp(App):
 
         # Store mode flag (set after login based on config)
         self.is_shop_mode = False
+
+        # Session timeout tracking
+        self.last_activity_time = time()
+        self.session_timeout_minutes = CONFIG.get('session_timeout_minutes', 30)
+        self.timeout_warning_shown = False
 
     def compose(self) -> ComposeResult:
         """Create child widgets"""
@@ -6136,6 +6280,11 @@ class POSApp(App):
         if user:
             self.current_user = user
 
+            # Reset activity tracking and start timeout timer
+            self.reset_activity()
+            if self.session_timeout_minutes > 0:
+                self.set_interval(30, self.check_session_timeout)  # Check every 30 seconds
+
             # Refresh footer to show role-appropriate bindings
             self.refresh_bindings()
 
@@ -6163,6 +6312,52 @@ class POSApp(App):
         else:
             # Login failed or cancelled - quit app
             self.exit()
+
+    def reset_activity(self) -> None:
+        """Reset last activity time (call on user interaction)"""
+        self.last_activity_time = time()
+        self.timeout_warning_shown = False
+
+    def check_session_timeout(self) -> None:
+        """Check if session has timed out due to inactivity"""
+        if not self.current_user or self.session_timeout_minutes <= 0:
+            return
+
+        elapsed_minutes = (time() - self.last_activity_time) / 60
+        warning_threshold = self.session_timeout_minutes - 2  # Warn 2 minutes before logout
+
+        # Show warning at 2 minutes before timeout
+        if elapsed_minutes >= warning_threshold and not self.timeout_warning_shown:
+            self.timeout_warning_shown = True
+            remaining = int((self.session_timeout_minutes - elapsed_minutes) * 60)
+            self.notify(
+                f"Automatski izlaz za {remaining} sekundi zbog neaktivnosti",
+                severity="warning",
+                timeout=10
+            )
+
+        # Logout when timeout expires
+        if elapsed_minutes >= self.session_timeout_minutes:
+            self.notify("Sesija istekla - automatski izlaz", severity="warning")
+            self.action_force_logout()
+
+    def action_force_logout(self) -> None:
+        """Force logout without confirmation (used by timeout)"""
+        self.current_user = None
+        self.cart = []
+        self.cart_total = 0.0
+        # Pop all screens and show login
+        while len(self._screen_stack) > 1:
+            self.pop_screen()
+        self.push_screen(LoginScreen(self.user_service), self.handle_login)
+
+    def on_key(self, event) -> None:
+        """Track activity on any key press"""
+        self.reset_activity()
+
+    def on_click(self, event) -> None:
+        """Track activity on mouse click"""
+        self.reset_activity()
 
     def _setup_shop_mode(self) -> None:
         """Setup shop mode interface after login"""
@@ -6728,11 +6923,8 @@ class POSApp(App):
             self.push_screen(screen) 
 
     def action_show_help(self) -> None:
-        """F1 - Show help"""
-        self.notify(
-            "F2: Prodaja | F3: Inventar | F4: Izveštaji | Q: Izlaz",
-            severity="information"
-        )
+        """F1 - Show keyboard shortcuts help"""
+        self.push_screen(HelpScreen(self.is_shop_mode))
 
     def action_checkout(self) -> None:
         """F5 - Checkout"""

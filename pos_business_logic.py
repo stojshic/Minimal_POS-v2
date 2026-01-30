@@ -47,7 +47,7 @@ class POSService:
 
     def __init__(self, inventory_repo, sales_repo, invoice_repo,
                  customer_repo=None, unified_sales_repo=None,
-                 payment_repo=None, receipt_repo=None):
+                 payment_repo=None, receipt_repo=None, settings_repo=None):
         self.inventory = inventory_repo
         self.sales = sales_repo  # Old SalesRepository (for backward compat)
         self.invoices = invoice_repo
@@ -55,7 +55,8 @@ class POSService:
         self.receipts = receipt_repo  # Deprecated - only used in legacy fallback
         self.customers = customer_repo
         self.unified_sales = unified_sales_repo  # New UnifiedSalesRepository
-        self.fiscal_printer = FiscalReceipt(STORE_CONFIG)
+        self.settings = settings_repo
+        self.fiscal_printer = FiscalReceipt(STORE_CONFIG, settings_repo)
     
     def sell_items(self, items: List[dict], payment_info: PaymentInfo,
                    allow_oversell: bool = False) -> SaleResult:
@@ -841,7 +842,7 @@ class UserService:
 
     def login(self, username: str, password: str) -> Tuple[bool, Optional[dict], str]:
         """
-        Authenticate user
+        Authenticate user with brute-force protection.
 
         Returns:
             (success, user_dict, message)
@@ -849,10 +850,22 @@ class UserService:
         if not username or not password:
             return False, None, "Korisničko ime i lozinka su obavezni!"
 
-        user = self.users.authenticate(username, password)
+        # Get lockout settings from config
+        from config import CONFIG
+        max_attempts = CONFIG.get('max_login_attempts', 5)
+        lockout_minutes = CONFIG.get('lockout_duration_minutes', 15)
+
+        user, error = self.users.authenticate(
+            username, password,
+            max_attempts=max_attempts,
+            lockout_minutes=lockout_minutes
+        )
 
         if user:
             return True, user, f"Dobrodošli, {user['full_name']}!"
+        elif error and error.startswith("locked:"):
+            remaining = error.split(":")[1]
+            return False, None, f"Nalog zaključan! Pokušajte ponovo za {remaining} minuta."
         else:
             return False, None, "Pogrešno korisničko ime ili lozinka!"
 
