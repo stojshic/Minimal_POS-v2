@@ -1259,14 +1259,37 @@ class UserRepository:
         import hashlib
         import bcrypt
 
-        # Check for lockout first
-        is_locked, remaining = self.is_locked_out(username, max_attempts, lockout_minutes)
-        if is_locked:
-            return (None, f"locked:{remaining}")
-
         with self.db.get_connection() as conn:
             cursor = conn.cursor()
-            # First, get user by username only
+
+            # Check for lockout first (inline to use same connection)
+            cursor.execute(
+                """SELECT COUNT(*) FROM login_attempts
+                   WHERE username = ? AND success = 0
+                   AND attempt_time > datetime('now', ? || ' minutes')""",
+                (username, -lockout_minutes)
+            )
+            failed_count = cursor.fetchone()[0]
+
+            if failed_count >= max_attempts:
+                # Calculate remaining lockout time
+                cursor.execute(
+                    """SELECT MIN(attempt_time) FROM login_attempts
+                       WHERE username = ? AND success = 0
+                       AND attempt_time > datetime('now', ? || ' minutes')""",
+                    (username, -lockout_minutes)
+                )
+                row = cursor.fetchone()
+                if row and row[0]:
+                    from datetime import datetime
+                    first_attempt = datetime.fromisoformat(row[0])
+                    now = datetime.now()
+                    elapsed = (now - first_attempt).total_seconds() / 60
+                    remaining = int(lockout_minutes - elapsed) + 1
+                    return (None, f"locked:{max(1, remaining)}")
+                return (None, f"locked:{lockout_minutes}")
+
+            # Get user by username
             cursor.execute(
                 "SELECT * FROM users WHERE username = ? AND is_active = 1",
                 (username,)
@@ -1274,8 +1297,11 @@ class UserRepository:
             row = cursor.fetchone()
 
             if not row:
-                # Record failed attempt even for non-existent users (prevent enumeration)
-                self.record_login_attempt(username, False)
+                # Record failed attempt for non-existent users (prevent enumeration)
+                cursor.execute(
+                    "INSERT INTO login_attempts (username, success) VALUES (?, 0)",
+                    (username,)
+                )
                 return (None, "invalid")
 
             user = dict(row)
@@ -1287,7 +1313,6 @@ class UserRepository:
                 # Modern bcrypt verification
                 if bcrypt.checkpw(password.encode(), stored_hash.encode()):
                     authenticated = True
-                    # Update last login
                     cursor.execute(
                         "UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?",
                         (user['id'],)
@@ -1305,13 +1330,22 @@ class UserRepository:
                     )
 
             if authenticated:
-                # Clear failed attempts on success
-                self.clear_failed_attempts(username)
-                self.record_login_attempt(username, True)
+                # Clear failed attempts and record success
+                cursor.execute(
+                    "DELETE FROM login_attempts WHERE username = ? AND success = 0",
+                    (username,)
+                )
+                cursor.execute(
+                    "INSERT INTO login_attempts (username, success) VALUES (?, 1)",
+                    (username,)
+                )
                 return (user, None)
             else:
                 # Record failed attempt
-                self.record_login_attempt(username, False)
+                cursor.execute(
+                    "INSERT INTO login_attempts (username, success) VALUES (?, 0)",
+                    (username,)
+                )
                 return (None, "invalid")
 
     def get_all_users(self) -> List[Dict[str, Any]]:
